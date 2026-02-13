@@ -1,0 +1,88 @@
+---
+title: "TerraLink in R: Quickstart"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{TerraLink in R: Quickstart}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Overview
+
+TerraLink helps you build habitat corridors between patches, using either raster or vector inputs.
+
+You can list packaged example scripts with:
+
+```r
+terralink_examples()
+```
+
+# Raster workflow
+
+```r
+library(terralink)
+
+raster_result <- terralink_raster(
+  raster = "habitat.tif",
+  patch_values = 1,
+  budget = 50,
+  min_patch_size = 2,
+  min_corridor_width = 3,
+  max_search_distance = 600,
+  units = "pixels"
+)
+
+raster_result$summary
+```
+
+# Vector workflow
+
+```r
+library(terralink)
+
+vector_result <- terralink_vector(
+  patches = "patches.gpkg",
+  budget = 1,
+  min_patch_size = 1,
+  min_corridor_width = 20,
+  max_search_distance = 5000,
+  units = "metric"
+)
+
+vector_result$summary
+```
+
+# Barbados-style examples
+
+These scripts use the raster/vector settings used during parity checks:
+
+```r
+source(system.file("scripts", "example_raster_barbados.R", package = "terralink"))
+source(system.file("scripts", "example_vector_barbados.R", package = "terralink"))
+```
+
+# Obstacle-aware routing (optional)
+
+For shortest-path corridors around impassable features, install:
+
+```r
+install.packages(c("gdistance", "raster", "sp"))
+```
+
+Then use:
+
+```r
+result <- terralink_vector(
+  patches = "patches.gpkg",
+  budget = 50,
+  min_patch_size = 5,
+  min_corridor_width = 200,
+  max_search_distance = 5000,
+  units = "metric",
+  obstacle_layers = "impassable.gpkg"
+)
+```

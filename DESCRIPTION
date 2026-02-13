@@ -1,0 +1,43 @@
+Package: terralink
+Title: Habitat Corridor Optimization for Raster and Vector Data
+Version: 1.5.0
+Authors@R: 
+    c(
+      person(
+        given = "Benjamin",
+        family = "Bishop",
+        email = "info@sorusconsultingllc.com",
+        role = c("aut", "cre")
+      ),
+      person(
+        given = "SORUS Consulting LLC",
+        role = c("fnd", "cph")
+      )
+    )
+Description: Standalone R implementation of the TerraLink habitat connectivity
+    corridor optimization algorithms, ported from the QGIS plugin without
+    QGIS dependencies.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+URL: https://sorusconsultingllc.com/tools/terralink-online, https://github.com/sorus-tools/TerraLink
+BugReports: https://github.com/sorus-tools/TerraLink/issues
+Imports:
+    cli,
+    igraph,
+    R6,
+    sf,
+    terra
+Suggests:
+    gdistance,
+    ggplot2,
+    knitr,
+    lwgeom,
+    raster,
+    rmarkdown,
+    sp,
+    shiny,
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+VignetteBuilder: knitr

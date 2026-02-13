@@ -1,0 +1,17 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj
+
+# Package build/check artifacts
+*.tar.gz
+*.Rcheck/
+/.Rcheck/
+/.Rbuildignore.bak
+Rplots.pdf
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
