@@ -4,20 +4,25 @@
 \name{terralink-package}
 \alias{terralink}
 \alias{terralink-package}
-\title{terralink: TerraLink Corridor Optimization}
+\title{terralink: Connectivity Corridor Optimization}
 \description{
-Standalone R implementation of the TerraLink habitat connectivity corridor optimization algorithms, ported from the QGIS plugin without QGIS dependencies.
+Standalone R implementation of habitat connectivity corridor optimization
+algorithms for raster and vector workflows, without desktop GIS
+dependencies.
 }
 \seealso{
-Useful links:
 \itemize{
-  \item \url{https://github.com/sorus-tools/TerraLink}
-  \item Report bugs at \url{https://github.com/sorus-tools/TerraLink/issues}
+\item \url{https://github.com/sorus-tools/terralink-r}
+\item Report bugs at \url{https://github.com/sorus-tools/terralink-r/issues}
 }
-
 }
 \author{
-\strong{Maintainer}: Benjamin Bishop \email{benjamin.bishop@sorusconsultingllc.com}
+\strong{Maintainer}: Benjamin Bishop \email{info@sorusconsultingllc.com}
+
+Other contributors:
+\itemize{
+  \item SORUS Consulting LLC [funder, copyright holder]
+}
 
 }
 \keyword{internal}

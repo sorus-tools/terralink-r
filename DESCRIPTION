@@ -1,6 +1,6 @@
 Package: terralink
-Title: Habitat Corridor Optimization for Raster and Vector Data
-Version: 1.5.0
+Title: Connectivity Corridor Optimization for Raster and Vector Data
+Version: 1.5.1
 Authors@R: 
     c(
       person(
@@ -14,15 +14,16 @@ Authors@R:
         role = c("fnd", "cph")
       )
     )
-Description: Standalone R implementation of the TerraLink habitat connectivity
-    corridor optimization algorithms, ported from the QGIS plugin without
-    QGIS dependencies.
+Description: Standalone R implementation of habitat connectivity corridor
+    optimization algorithms for raster and vector workflows. Provides patch
+    filtering, candidate generation, corridor selection, and summary outputs
+    without desktop GIS dependencies.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.2
-URL: https://sorusconsultingllc.com/tools/terralink-online, https://github.com/sorus-tools/TerraLink
-BugReports: https://github.com/sorus-tools/TerraLink/issues
+URL: https://sorusconsultingllc.com/tools/terralink-online, https://github.com/sorus-tools/terralink-r
+BugReports: https://github.com/sorus-tools/terralink-r/issues
 Imports:
     cli,
     igraph,
