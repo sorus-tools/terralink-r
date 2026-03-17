@@ -1,7 +1,11 @@
 ^\.github$
 ^\.github/
+^\.claude$
+^\.claude/
 ^LICENSE\.md$
 ^Rplots\.pdf$
 ^scripts$
 ^scripts/
 ^terralink_test_interactive\.R$
+^tmp$
+^tmp/

@@ -9,9 +9,10 @@ run_raster_analysis(
   patch_values,
   budget = NULL,
   budget_pixels = NULL,
-  strategy = "circuit_utility",
+  strategy = "most_connected_habitat",
   min_patch_size = 10,
   min_corridor_width = 3,
+  corridor_cell_assignment = "sum_total_network_area",
   max_search_distance = 100,
   obstacle_values = NULL,
   obstacle_ranges = NULL,
@@ -25,6 +26,17 @@ run_raster_analysis(
   verbose = 0,
   progress = FALSE,
   obstacle_strategy = c("error", "straight_line", "disable_obstacles"),
+  species_dispersal_distance = NULL,
+  species_dispersal_kernel = HABITAT_AVAILABILITY_DEFAULT_KERNEL,
+  min_patch_area_for_species = 0,
+  patch_area_scaling = HABITAT_AVAILABILITY_DEFAULT_SCALING,
+  mobility_detour_cap = 8,
+  redundancy_method = "ime",
+  metric_weights = NULL,
+  weight_m = NULL,
+  weight_lcc = NULL,
+  weight_pc = NULL,
+  weight_f = NULL,
   keep_candidates = FALSE
 )
 }
@@ -37,11 +49,15 @@ run_raster_analysis(
 
 \item{budget_pixels}{Back-compat alias for budget (pixels).}
 
-\item{strategy}{Strategy name: "circuit_utility", "most_connectivity" (alias), or "largest_network".}
+\item{strategy}{Strategy name. Canonical TerraLink 1.7 values are
+"most_connected_habitat", "largest_single_network",
+"landscape_fluidity", and "reachable_habitat_advanced".}
 
 \item{min_patch_size}{Minimum patch size (units defined by \code{units}).}
 
 \item{min_corridor_width}{Minimum corridor width (units defined by \code{units}).}
+
+\item{corridor_cell_assignment}{Corridor cell assignment mode.}
 
 \item{max_search_distance}{Maximum search distance (units defined by \code{units}).}
 
@@ -69,6 +85,29 @@ run_raster_analysis(
 
 \item{obstacle_strategy}{Behavior when gdistance is unavailable and obstacles are provided.}
 
+\item{species_dispersal_distance}{Species movement distance used by
+"reachable_habitat_advanced" and connectivity reporting.}
+
+\item{species_dispersal_kernel}{Dispersal kernel for habitat availability.}
+
+\item{min_patch_area_for_species}{Minimum patch area eligible for species metrics.}
+
+\item{patch_area_scaling}{Patch-area scaling for habitat availability ("sqrt" or "log").}
+
+\item{mobility_detour_cap}{Cap used by graph-based mobility/fluidity metrics.}
+
+\item{redundancy_method}{Flow redundancy method ("ime" or "fri").}
+
+\item{metric_weights}{Named numeric vector for composite connectivity score.}
+
+\item{weight_m}{Optional mesh weight override for composite score.}
+
+\item{weight_lcc}{Optional LCC weight override for composite score.}
+
+\item{weight_pc}{Optional PC weight override for composite score.}
+
+\item{weight_f}{Optional flow weight override for composite score.}
+
 \item{keep_candidates}{Whether to keep candidate list in the output.}
 }
 \value{
@@ -76,4 +115,9 @@ List with patches, corridors, rasters, and summary.
 }
 \description{
 Run TerraLink raster workflow
+}
+\details{
+Raster inputs are funneled through TerraLink's vector corridor pipeline after
+habitat and impassable classes are polygonized, matching the current QGIS
+plugin workflow.
 }

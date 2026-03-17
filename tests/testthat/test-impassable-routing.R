@@ -3,7 +3,12 @@ test_that("raster impassable routing avoids obstacle cells", {
   skip_if_not_installed("raster")
   skip_if_not_installed("sp")
 
-  r <- terra::rast(nrows = 80, ncols = 80, xmin = 0, xmax = 80, ymin = 0, ymax = 80)
+  r <- terra::rast(
+    nrows = 80, ncols = 80,
+    xmin = 0, xmax = 8000,
+    ymin = 0, ymax = 8000,
+    crs = "EPSG:3857"
+  )
   r[,] <- 0
   r[20:30, 10:18] <- 1
   r[20:30, 62:70] <- 1

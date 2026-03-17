@@ -1,7 +1,10 @@
 # terralink raster runner (QGIS-free)
 #
 # Usage in R:
-#   source("/Users/benbishop/projects/terralink/inst/scripts/run_raster.R")
+#   source(system.file("scripts", "run_raster.R", package = "terralink"))
+#
+# Dev usage (optional):
+#   devtools::load_all("path/to/terralink"); source("inst/scripts/run_raster.R")
 
 clear_environment <- function() {
   rm(list = ls(envir = .GlobalEnv), envir = .GlobalEnv)
@@ -10,13 +13,8 @@ clear_environment <- function() {
 # Uncomment to clear workspace on run.
 # clear_environment()
 
-pkg_path <- "/Users/benbishop/projects/terralink"
-if (requireNamespace("devtools", quietly = TRUE) && file.exists(file.path(pkg_path, "DESCRIPTION"))) {
-  suppressMessages(devtools::load_all(pkg_path, quiet = TRUE))
-} else if (requireNamespace("terralink", quietly = TRUE)) {
-  # Package installed; namespace will be used below.
-} else {
-  stop("terralink is not available. Install it or update pkg_path.")
+if (!requireNamespace("terralink", quietly = TRUE)) {
+  stop("terralink is not installed. Install it first (e.g., install.packages('terralink') or remotes::install_local()).")
 }
 
 if (!requireNamespace("terra", quietly = TRUE)) {
@@ -80,15 +78,15 @@ diagnose_patch_counts <- function(raster, patch_values, min_patch_size) {
 # ---------------------------
 # USER SETTINGS (edit here)
 # ---------------------------
-input_path <- ""   # Leave blank to choose a file.
+input_path <- terralink::terralink_sample_data("raster")   # Leave blank to choose a file.
 output_dir <- ""   # Leave blank to create <input>_output folder.
-strategy <- "most_connectivity"  # "most_connectivity" or "largest_network".
+strategy <- "most_connected_habitat"  # Canonical 1.7: most_connected_habitat, largest_single_network, reachable_habitat_advanced, landscape_fluidity.
 
 units <- "pixels"  # "pixels", "metric", or "imperial".
 
-patch_values <- c(12)       # Habitat cell values in the raster.
+patch_values <- c(1)        # Habitat cell values in the raster.
 patch_ranges <- list()      # Optional list of ranges, e.g. list(c(5, 7), c(10, 12)).
-obstacle_values <- c()      # Optional impassable values.
+obstacle_values <- c(2)     # Optional impassable values.
 obstacle_ranges <- list()   # Optional impassable ranges.
 
 budget <- 100               # Total corridor budget (units above).

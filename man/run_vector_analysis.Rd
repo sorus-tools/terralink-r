@@ -7,7 +7,7 @@
 run_vector_analysis(
   patches,
   budget,
-  strategy = "circuit_utility",
+  strategy = "most_connected_habitat",
   min_patch_size = NULL,
   min_corridor_width = 100,
   max_search_distance = 5000,
@@ -20,6 +20,18 @@ run_vector_analysis(
   progress = FALSE,
   obstacle_strategy = c("error", "straight_line", "disable_obstacles"),
   return_crs = c("input", "utm"),
+  species_dispersal_distance = NULL,
+  species_dispersal_kernel = HABITAT_AVAILABILITY_DEFAULT_KERNEL,
+  min_patch_area_for_species = 0,
+  patch_area_scaling = HABITAT_AVAILABILITY_DEFAULT_SCALING,
+  patch_quality_field = NULL,
+  mobility_detour_cap = 8,
+  redundancy_method = "ime",
+  metric_weights = NULL,
+  weight_m = NULL,
+  weight_lcc = NULL,
+  weight_pc = NULL,
+  weight_f = NULL,
   keep_candidates = FALSE
 )
 }
@@ -28,7 +40,9 @@ run_vector_analysis(
 
 \item{budget}{Corridor budget (ha/ac).}
 
-\item{strategy}{Strategy name: "circuit_utility", "most_connectivity" (alias), or "largest_network".}
+\item{strategy}{Strategy name. Canonical TerraLink 1.7 values are
+"most_connected_habitat", "largest_single_network",
+"landscape_fluidity", and "reachable_habitat_advanced".}
 
 \item{min_patch_size}{Minimum patch size (ha/ac).}
 
@@ -53,6 +67,31 @@ run_vector_analysis(
 \item{obstacle_strategy}{Behavior when gdistance is unavailable and obstacles are provided.}
 
 \item{return_crs}{CRS for outputs ("input" or "utm").}
+
+\item{species_dispersal_distance}{Species movement distance used by
+"reachable_habitat_advanced" and connectivity reporting.}
+
+\item{species_dispersal_kernel}{Dispersal kernel for habitat availability.}
+
+\item{min_patch_area_for_species}{Minimum patch area eligible for species metrics.}
+
+\item{patch_area_scaling}{Patch-area scaling for habitat availability ("sqrt" or "log").}
+
+\item{patch_quality_field}{Optional numeric field used to weight patch quality in vector mode.}
+
+\item{mobility_detour_cap}{Cap used by graph-based mobility/fluidity metrics.}
+
+\item{redundancy_method}{Flow redundancy method ("ime" or "fri").}
+
+\item{metric_weights}{Named numeric vector for composite connectivity score.}
+
+\item{weight_m}{Optional mesh weight override for composite score.}
+
+\item{weight_lcc}{Optional LCC weight override for composite score.}
+
+\item{weight_pc}{Optional PC weight override for composite score.}
+
+\item{weight_f}{Optional flow weight override for composite score.}
 
 \item{keep_candidates}{Keep candidate list in output.}
 }

@@ -1,7 +1,10 @@
 # terralink vector runner (QGIS-free)
 #
 # Usage in R:
-#   source("/Users/benbishop/projects/terralink/inst/scripts/run_vector.R")
+#   source(system.file("scripts", "run_vector.R", package = "terralink"))
+#
+# Dev usage (optional):
+#   devtools::load_all("path/to/terralink"); source("inst/scripts/run_vector.R")
 
 clear_environment <- function() {
   rm(list = ls(envir = .GlobalEnv), envir = .GlobalEnv)
@@ -10,13 +13,16 @@ clear_environment <- function() {
 # Uncomment to clear workspace on run.
 # clear_environment()
 
-pkg_path <- "/Users/benbishop/projects/terralink"
-if (requireNamespace("devtools", quietly = TRUE) && file.exists(file.path(pkg_path, "DESCRIPTION"))) {
-  suppressMessages(devtools::load_all(pkg_path, quiet = TRUE))
-} else if (requireNamespace("terralink", quietly = TRUE)) {
-  # Package installed; namespace will be used below.
-} else {
-  stop("terralink is not available. Install it or update pkg_path.")
+if (!requireNamespace("terralink", quietly = TRUE)) {
+  stop("terralink is not installed. Install it first (e.g., install.packages('terralink') or remotes::install_local()).")
+}
+
+if (!requireNamespace("terra", quietly = TRUE)) {
+  stop("terra is required. Please install.packages('terra').")
+}
+
+if (!requireNamespace("sf", quietly = TRUE)) {
+  stop("sf is required. Please install.packages('sf').")
 }
 
 choose_option <- function(options, title) {
@@ -36,9 +42,9 @@ choose_option <- function(options, title) {
 # ---------------------------
 # USER SETTINGS (edit here)
 # ---------------------------
-input_path <- ""   # Leave blank to choose a file.
+input_path <- terralink::terralink_sample_data("vector")   # Leave blank to choose a file.
 output_dir <- ""   # Leave blank to create <input>_output folder.
-strategy <- "most_connectivity"  # "most_connectivity" or "largest_network".
+strategy <- "most_connected_habitat"  # Canonical 1.7: most_connected_habitat, largest_single_network, reachable_habitat_advanced, landscape_fluidity.
 units <- "metric"  # "metric" or "imperial".
 
 budget <- 50        # Corridor budget (ha/ac).
@@ -46,7 +52,7 @@ min_patch_size <- 5 # Minimum patch size (ha/ac).
 min_corridor_width <- 200  # Corridor width (m/ft).
 max_search_distance <- 5000 # Max search distance (m/ft).
 
-obstacles_path <- ""  # Optional obstacles layer path (roads, urban, etc).
+obstacles_path <- terralink::terralink_sample_data("obstacle")  # Optional obstacles layer path.
 obstacle_resolution <- NULL # Optional raster resolution for obstacle routing.
 # NOTE: obstacle-aware routing uses optional packages: gdistance, raster, sp.
 # ---------------------------

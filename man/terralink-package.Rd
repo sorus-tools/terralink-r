@@ -10,14 +10,28 @@ Standalone R implementation of habitat connectivity corridor optimization
 algorithms for raster and vector workflows, without desktop GIS
 dependencies.
 }
+\details{
+Main user entry points:
+\itemize{
+\item \code{terralink_raster()} for raster inputs
+\item \code{terralink_vector()} for polygon patch inputs
+\item \code{terralink_run()} for a single generic wrapper
+}
+
+Raster inputs are funneled through TerraLink's vector corridor pipeline so
+the R package matches the current QGIS plugin workflow.
+}
 \seealso{
 \itemize{
+\item \code{\link{terralink_raster}}
+\item \code{\link{terralink_vector}}
+\item \code{\link{terralink_run}}
 \item \url{https://github.com/sorus-tools/terralink-r}
 \item Report bugs at \url{https://github.com/sorus-tools/terralink-r/issues}
 }
 }
 \author{
-\strong{Maintainer}: Benjamin Bishop \email{info@sorusconsultingllc.com}
+\strong{Maintainer}: Benjamin Bishop \email{benjamin.bishop@sorusconsultingllc.com}
 
 Other contributors:
 \itemize{
@@ -25,4 +39,3 @@ Other contributors:
 }
 
 }
-\keyword{internal}

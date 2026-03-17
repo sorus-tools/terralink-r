@@ -1,7 +1,12 @@
 test_that("budget_pixels requires pixel units", {
   skip_if_not_installed("terra")
 
-  r <- terra::rast(nrows = 10, ncols = 10, xmin = 0, xmax = 10, ymin = 0, ymax = 10)
+  r <- terra::rast(
+    nrows = 10, ncols = 10,
+    xmin = 0, xmax = 1000,
+    ymin = 0, ymax = 1000,
+    crs = "EPSG:3857"
+  )
   terra::values(r) <- 1
 
   expect_error(
@@ -20,11 +25,15 @@ test_that("budget_pixels requires pixel units", {
 test_that("candidate pair guard triggers for raster", {
   skip_if_not_installed("terra")
 
-  r <- terra::rast(nrows = 10, ncols = 10, xmin = 0, xmax = 10, ymin = 0, ymax = 10)
-  terra::values(r) <- 0
-  terra::values(r)[1] <- 1
-  terra::values(r)[50] <- 1
-  terra::values(r)[100] <- 1
+  r <- terra::rast(
+    nrows = 10, ncols = 10,
+    xmin = 0, xmax = 1000,
+    ymin = 0, ymax = 1000,
+    crs = "EPSG:3857"
+  )
+  vals <- rep(0, terra::ncell(r))
+  vals[c(1, 2, 11, 12, 45, 46, 55, 56, 89, 90, 99, 100)] <- 1
+  terra::values(r) <- vals
 
   expect_error(
     terralink_raster(
@@ -48,7 +57,7 @@ test_that("invalid geometry is fixed or reported", {
 
   has_make_valid <- is.function(sf::st_make_valid) || (requireNamespace("lwgeom", quietly = TRUE) && "st_make_valid" %in% getNamespaceExports("lwgeom"))
   if (has_make_valid) {
-    expect_error(
+    suppressWarnings(expect_error(
       terralink_vector(
         patches = patches,
         budget = 1,
@@ -58,7 +67,7 @@ test_that("invalid geometry is fixed or reported", {
         units = "metric"
       ),
       NA
-    )
+    ))
   } else {
     expect_error(
       terralink_vector(
@@ -98,7 +107,7 @@ test_that("vector outputs return to input CRS by default", {
 test_that("metric raster units work with projected CRS", {
   skip_if_not_installed("terra")
 
-  r <- terra::rast(nrows = 10, ncols = 10, xmin = 0, xmax = 10, ymin = 0, ymax = 10, crs = "EPSG:3857")
+  r <- terra::rast(nrows = 10, ncols = 10, xmin = 0, xmax = 1000, ymin = 0, ymax = 1000, crs = "EPSG:3857")
   v <- rep(0, terra::ncell(r))
   v[c(1:5, 96:100)] <- 1
   terra::values(r) <- v

@@ -7,7 +7,7 @@
 terralink_vector(
   patches,
   budget,
-  strategy = "circuit_utility",
+  strategy = "most_connected_habitat",
   min_patch_size = NULL,
   min_corridor_width = 100,
   max_search_distance = 5000,
@@ -20,6 +20,18 @@ terralink_vector(
   progress = FALSE,
   obstacle_strategy = c("error", "straight_line", "disable_obstacles"),
   return_crs = c("input", "utm"),
+  species_dispersal_distance = NULL,
+  species_dispersal_kernel = HABITAT_AVAILABILITY_DEFAULT_KERNEL,
+  min_patch_area_for_species = 0,
+  patch_area_scaling = HABITAT_AVAILABILITY_DEFAULT_SCALING,
+  patch_quality_field = NULL,
+  mobility_detour_cap = 8,
+  redundancy_method = "ime",
+  metric_weights = NULL,
+  weight_m = NULL,
+  weight_lcc = NULL,
+  weight_pc = NULL,
+  weight_f = NULL,
   output_dir = NULL,
   output_prefix = NULL,
   output_paths = NULL,
@@ -28,52 +40,185 @@ terralink_vector(
 )
 }
 \arguments{
-\item{patches}{sf object with polygon geometry (one feature per patch) or path.}
+\item{patches}{sf object with polygon geometry (one row per patch), or a
+file path to a GeoPackage / Shapefile. The CRS should be projected
+(e.g., UTM) so that area and distance calculations are meaningful.}
 
-\item{budget}{Total corridor area budget (ha/ac).}
+\item{budget}{Numeric. Total corridor area budget in hectares
+(\code{units = "metric"}) or acres (\code{units = "imperial"}).
+A reasonable starting point is 5--20 percent of your total patch area.}
 
-\item{strategy}{Either "largest_network", "circuit_utility", or "most_connectivity" (alias).}
+\item{strategy}{Character string selecting the optimization objective.
+One of \code{"most_connected_habitat"} (default; maximizes total
+structurally connected habitat area), \code{"largest_single_network"}
+(maximizes the single largest connected component),
+\code{"landscape_fluidity"} (maximizes ease of movement and route
+redundancy), or \code{"reachable_habitat_advanced"} (maximizes
+dispersal-weighted reachable habitat; set
+\code{species_dispersal_distance}).}
 
-\item{min_patch_size}{Minimum patch area (ha/ac).}
+\item{min_patch_size}{Numeric. Minimum patch area in hectares
+(\code{"metric"}) or acres (\code{"imperial"}). Patches smaller than
+this are dropped. Default: \code{NULL} (no filter).}
 
-\item{min_corridor_width}{Minimum corridor width (m/ft).}
+\item{min_corridor_width}{Numeric. Minimum corridor width in meters
+(\code{"metric"}) or feet (\code{"imperial"}). Controls the buffer
+applied to corridor center-lines. Typical values: 30--100 m for
+terrestrial mammals. Default: 100.}
 
-\item{max_search_distance}{Maximum search distance (m/ft).}
+\item{max_search_distance}{Numeric. Maximum edge-to-edge distance (meters
+or feet) between patches to consider a candidate corridor. Increase if
+few or no corridors are generated. Default: 5000.}
 
-\item{obstacle_layers}{Optional obstacle layers (sf or path).}
+\item{obstacle_layers}{Optional sf object or file path to polygon barriers
+(roads, water bodies). Requires the \pkg{gdistance} package for
+shortest-path routing around obstacles.}
 
-\item{obstacle_resolution}{Raster resolution for obstacle routing.}
+\item{obstacle_resolution}{Numeric. Raster cell size (in CRS units) used
+to rasterize obstacles for shortest-path routing. Smaller values give more
+accurate routing but increase computation time.}
 
-\item{units}{Unit system (metric or imperial).}
+\item{units}{Character string: \code{"metric"} (hectares / meters, default)
+or \code{"imperial"} (acres / feet).}
 
-\item{max_pair_checks}{Limit for candidate pair checks.}
+\item{max_pair_checks}{Integer. Upper limit on patch pairs evaluated.
+Default: 2,000,000.}
 
-\item{max_candidates}{Limit for candidate corridors.}
+\item{max_candidates}{Integer. Upper limit on candidate corridors retained.
+Default: 200,000.}
 
-\item{verbose}{Verbosity level (0-2).}
+\item{verbose}{Integer verbosity level: 0 = silent, 1 = progress, 2 =
+detailed. Default: 0.}
 
-\item{progress}{Show progress bars.}
+\item{progress}{Logical. Show progress bars. Default: \code{FALSE}.}
 
-\item{obstacle_strategy}{Behavior when gdistance is unavailable and obstacles are provided.}
+\item{obstacle_strategy}{Character string controlling behavior when
+obstacles are provided but \pkg{gdistance} is not installed. One of
+\code{"error"} (default; stop with an error),
+\code{"straight_line"} (fall back to straight-line corridors), or
+\code{"disable_obstacles"} (silently ignore obstacles).}
 
-\item{return_crs}{CRS for outputs ("input" or "utm").}
+\item{return_crs}{Character string controlling the output CRS.
+\code{"input"} (default) returns outputs in the same CRS as the input
+patches. \code{"utm"} returns outputs in the UTM zone used internally.}
 
-\item{output_dir}{Optional output directory.}
+\item{species_dispersal_distance}{Numeric. Typical movement distance for
+the focal species in meters (\code{"metric"}) or feet
+(\code{"imperial"}). Used by \code{"reachable_habitat_advanced"} and
+habitat availability metrics. If \code{NULL} (default),
+\code{max_search_distance} is used as a proxy.}
 
-\item{output_prefix}{Optional output name prefix.}
+\item{species_dispersal_kernel}{Character string. Dispersal probability
+kernel. Currently only \code{"exponential"} is supported (default).}
+
+\item{min_patch_area_for_species}{Numeric. Minimum patch area (in analysis
+area units) for inclusion in species-level metrics. Default: 0.}
+
+\item{patch_area_scaling}{Character string controlling how patch area is
+transformed before weighting. \code{"sqrt"} (default) applies square-root
+scaling, giving moderate weight to large patches. \code{"log"} applies
+logarithmic scaling, reducing the influence of very large patches.}
+
+\item{patch_quality_field}{Optional character string naming a numeric
+column in \code{patches} that provides a 0--1 quality weight per patch
+(e.g., habitat suitability). Patches with higher quality contribute more
+to connectivity metrics.}
+
+\item{mobility_detour_cap}{Numeric. Maximum detour ratio for fluidity
+metrics. Controls how much longer an indirect route can be before it is
+considered non-functional. Default: 8.}
+
+\item{redundancy_method}{Character string selecting the flow redundancy
+method. \code{"ime"} (default) uses Inverse Mean Effective-resistance.
+\code{"fri"} uses the Flow Redundancy Index.}
+
+\item{metric_weights}{Optional named numeric vector with elements
+\code{"mesh"}, \code{"lcc"}, \code{"pc"}, \code{"flow"} for the
+composite score. Normalized to sum to 1.}
+
+\item{weight_m}{Optional numeric override for the mesh weight.}
+
+\item{weight_lcc}{Optional numeric override for the LCC weight.}
+
+\item{weight_pc}{Optional numeric override for the PC weight.}
+
+\item{weight_f}{Optional numeric override for the flow weight.}
+
+\item{output_dir}{Optional output directory for \code{write_outputs}.}
+
+\item{output_prefix}{Optional name prefix for output files.}
 
 \item{output_paths}{Optional named list of explicit output file paths.}
 
-\item{write_outputs}{Whether to write outputs to disk.}
+\item{write_outputs}{Logical. Write GeoPackage and CSV outputs to disk.
+Default: \code{FALSE}.}
 
-\item{keep_candidates}{Keep candidate list in output.}
+\item{keep_candidates}{Logical. Include full candidate table in result.
+Default: \code{FALSE}.}
 }
 \value{
-List containing corridors sf, networks sf, and metrics.
+An object of class \code{"terralink_result"} (a list) with the
+following elements:
+\itemize{
+\item \code{corridors}: sf object of selected corridors with columns
+\code{patch1}, \code{patch2} (endpoint patch IDs),
+\code{corridor_area} (ha or ac), \code{corridor_length} (m or ft),
+\code{connected_area}, \code{network_area}, and geometry.
+\item \code{patches}: sf object of patches used in the analysis, with
+area and centroid attributes.
+\item \code{networks}: sf object of connected network polygons (one
+feature per component of patches + corridors).
+\item \code{summary}: Named list including \code{budget_total},
+\code{budget_used}, \code{corridors_used}, \code{candidate_edges},
+\code{patches}, \code{raw_patches}, \code{filtered_out},
+\code{primary_links}, \code{redundant_links}, \code{strategy},
+\code{units}.
+\item \code{metrics}: Named list of PRE/POST landscape connectivity
+metrics. Every metric has a \code{_pre} and \code{_post} value.
+Key metrics: \code{total_connected_habitat_area},
+\code{largest_network_area}, \code{habitat_availability},
+\code{mean_effective_resistance} (lower is better),
+\code{mesh_norm}, \code{lcc}, \code{pc}, \code{flow_redundancy},
+\code{strategic_mobility}, \code{landscape_fluidity},
+\code{composite_connectivity}.
+\item \code{metrics_report}: Character vector with a human-readable
+PRE/POST table. Print with
+\code{cat(result$metrics_report, sep = "\\n")}.
+\item \code{strategy_stats}: Named list of strategy-specific
+statistics.
+\item \code{mode}: Character string \code{"vector"}.
+\item \code{inputs}: Named list echoing key input parameters.
+\item \code{run_stats}: Named list with \code{elapsed_s},
+\code{candidate_edges}, \code{candidate_pairs}.
+\item \code{warnings}: Character vector of warnings.
+\item \code{diagnostics}: List of diagnostic messages.
+}
+The object has \code{print()}, \code{summary()}, and \code{plot()}
+methods.
 }
 \description{
-Run TerraLink corridor analysis on vector patches
+Builds candidate corridors between polygon habitat patches and selects an
+optimal corridor network under a budget constraint. This is the native
+TerraLink workflow and is usually the better choice when planning inputs are
+already polygon features.
 }
+\section{Parameter guidance}{
+
+\itemize{
+\item \strong{budget}: A practical starting point is often around 5--20
+percent of total patch area. Run multiple budgets and compare PRE/POST
+metrics to find the point of diminishing returns.
+\item \strong{min_corridor_width}: Depending on species and context,
+30--100 m can be a useful starting range for mammals and 10--30 m for
+some small birds.
+\item \strong{max_search_distance}: 500--5000 m is a common starting
+range. Increase if 0 corridors are generated.
+\item \strong{species_dispersal_distance}: Set to the focal species'
+typical natal or daily movement range. Directly affects
+\code{"reachable_habitat_advanced"} and habitat availability metrics.
+}
+}
+
 \examples{
 p1 <- sf::st_polygon(list(rbind(c(0, 0), c(0, 10), c(10, 10), c(10, 0), c(0, 0))))
 p2 <- sf::st_polygon(list(rbind(c(30, 0), c(30, 10), c(40, 10), c(40, 0), c(30, 0))))
@@ -88,4 +233,11 @@ result <- terralink_vector(
   units = "metric"
 )
 result$summary
+
+# Access PRE/POST metrics
+result$metrics$largest_network_area_pre
+result$metrics$largest_network_area_post
+
+# Print the full metrics report
+cat(result$metrics_report, sep = "\n")
 }

@@ -24,8 +24,10 @@ terralink_merge_intersecting_patches <- function(patches_sf) {
   roots <- vapply(seq_len(n), function(i) as.integer(uf$find(i)), integer(1))
   groups <- split(seq_len(n), roots)
   merged <- list()
+  attrs <- list()
   k <- 1L
   crs_obj <- sf::st_crs(patches_sf)
+  attr_names <- setdiff(names(patches_sf), attr(patches_sf, "sf_column"))
   for (idx in groups) {
     if (length(idx) == 0) next
     g <- tryCatch(sf::st_union(geom[idx]), error = function(e) sf::st_combine(geom[idx]))
@@ -41,12 +43,38 @@ terralink_merge_intersecting_patches <- function(patches_sf) {
     } else {
       merged[[k]] <- g
     }
+    if (length(attr_names) > 0) {
+      row_vals <- lapply(attr_names, function(nm) {
+        vals <- patches_sf[[nm]][idx]
+        vals <- vals[!is.na(vals)]
+        if (length(vals) == 0) return(NA)
+        if (is.numeric(vals) || is.integer(vals)) return(mean(as.numeric(vals), na.rm = TRUE))
+        if (is.logical(vals)) return(any(vals))
+        as.character(vals[[1]])
+      })
+      names(row_vals) <- attr_names
+      attrs[[k]] <- row_vals
+    }
     k <- k + 1L
   }
   if (length(merged) == 0) {
     return(sf::st_sf(geometry = sf::st_sfc(crs = crs_obj))[0, ])
   }
-  sf::st_sf(geometry = sf::st_sfc(merged, crs = crs_obj))
+  geom_sf <- sf::st_sf(geometry = sf::st_sfc(merged, crs = crs_obj))
+  if (length(attrs) == length(merged) && length(attr_names) > 0) {
+    attr_df <- as.data.frame(do.call(rbind, lapply(attrs, function(x) {
+      as.data.frame(x, stringsAsFactors = FALSE)
+    })), stringsAsFactors = FALSE)
+    for (nm in names(attr_df)) {
+      if (is.numeric(patches_sf[[nm]]) || is.integer(patches_sf[[nm]])) {
+        attr_df[[nm]] <- suppressWarnings(as.numeric(attr_df[[nm]]))
+      } else if (is.logical(patches_sf[[nm]])) {
+        attr_df[[nm]] <- as.logical(attr_df[[nm]])
+      }
+    }
+    geom_sf <- sf::st_sf(attr_df, geometry = sf::st_geometry(geom_sf), crs = crs_obj)
+  }
+  geom_sf
 }
 
 terralink_geom_parts <- function(geom) {
@@ -95,6 +123,13 @@ terralink_pick_part_closest_to_patch <- function(geom, patch_geom) {
   parts[which.min(d)]
 }
 
+terralink_shortest_path_quiet <- function(transition, start, end) {
+  suppressWarnings(tryCatch(
+    gdistance::shortestPath(transition, as.matrix(start), as.matrix(end), output = "SpatialLines"),
+    error = function(e) NULL
+  ))
+}
+
 terralink_finalize_vector_corridor <- function(pid1, pid2, corridor_geom, patch_geom, patch_union = NULL) {
   if (is.null(corridor_geom) || length(corridor_geom) == 0 || isTRUE(sf::st_is_empty(corridor_geom))) {
     return(list(geom = NULL, patch_ids = integer(0), extra_patch_ids = integer(0)))
@@ -117,6 +152,17 @@ terralink_finalize_vector_corridor <- function(pid1, pid2, corridor_geom, patch_
   }
   extra <- setdiff(patch_ids, c(as.integer(pid1), as.integer(pid2)))
   list(geom = final_geom, patch_ids = patch_ids, extra_patch_ids = extra)
+}
+
+terralink_nearest_boundary_route_points <- function(geom_i, geom_j) {
+  nearest <- tryCatch(sf::st_nearest_points(geom_i, geom_j), error = function(e) NULL)
+  if (is.null(nearest) || length(nearest) == 0) return(NULL)
+  coords <- suppressWarnings(tryCatch(sf::st_coordinates(nearest), error = function(e) NULL))
+  if (is.null(coords) || nrow(coords) < 2) return(NULL)
+  list(
+    start = matrix(as.numeric(coords[1, c("X", "Y")]), ncol = 2),
+    end = matrix(as.numeric(coords[nrow(coords), c("X", "Y")]), ncol = 2)
+  )
 }
 
 terralink_push_vector_candidate <- function(candidates_by_pair, candidate, max_keep_per_pair = 8L, min_distinct_overlap_ratio = 0.75, proximity_dist = 0) {
@@ -180,6 +226,69 @@ terralink_as_linestring_sfc <- function(path, crs) {
   sf::st_set_crs(line, sf::st_crs(crs))
 }
 
+terralink_dedupe_xy_points <- function(coords, tol = 0.01) {
+  if (is.null(coords) || length(coords) == 0) {
+    return(matrix(numeric(0), ncol = 2))
+  }
+  coords <- as.matrix(coords)
+  if (nrow(coords) == 0) {
+    return(matrix(numeric(0), ncol = 2))
+  }
+  keys <- paste(round(coords[, 1] / tol), round(coords[, 2] / tol), sep = "_")
+  coords[!duplicated(keys), , drop = FALSE]
+}
+
+terralink_boundary_terminals_for_patch <- function(geom, spacing_m = 150, max_pts = 120) {
+  if (is.null(geom) || length(geom) == 0 || isTRUE(any(sf::st_is_empty(geom)))) {
+    return(matrix(numeric(0), ncol = 2))
+  }
+
+  collect_coords <- function(line_geom) {
+    if (is.null(line_geom) || length(line_geom) == 0 || isTRUE(any(sf::st_is_empty(line_geom)))) {
+      return(matrix(numeric(0), ncol = 2))
+    }
+    coords <- suppressWarnings(tryCatch(sf::st_coordinates(line_geom), error = function(e) NULL))
+    if (is.null(coords) || nrow(coords) == 0) {
+      return(matrix(numeric(0), ncol = 2))
+    }
+    coords[, c("X", "Y"), drop = FALSE]
+  }
+
+  boundary <- suppressWarnings(tryCatch(sf::st_boundary(geom), error = function(e) NULL))
+  parts <- suppressWarnings(tryCatch(sf::st_cast(boundary, "LINESTRING", warn = FALSE), error = function(e) NULL))
+  if (is.null(parts) || length(parts) == 0) {
+    parts <- suppressWarnings(tryCatch(sf::st_cast(geom, "LINESTRING", warn = FALSE), error = function(e) NULL))
+  }
+  if (is.null(parts) || length(parts) == 0) {
+    return(matrix(numeric(0), ncol = 2))
+  }
+
+  pts <- matrix(numeric(0), ncol = 2)
+  for (idx in seq_along(parts)) {
+    part <- parts[idx]
+    pts <- rbind(pts, collect_coords(part))
+    if (is.finite(spacing_m) && spacing_m > 0) {
+      densified <- suppressWarnings(tryCatch(
+        sf::st_segmentize(part, dfMaxLength = spacing_m),
+        error = function(e) NULL
+      ))
+      pts <- rbind(pts, collect_coords(densified))
+    }
+  }
+  pts <- terralink_dedupe_xy_points(pts, tol = 0.01)
+  if (nrow(pts) == 0) {
+    return(matrix(numeric(0), ncol = 2))
+  }
+  if (is.finite(max_pts) && max_pts > 0 && nrow(pts) > max_pts) {
+    step <- max(1L, floor(nrow(pts) / max_pts))
+    pts <- pts[seq(1L, nrow(pts), by = step), , drop = FALSE]
+    if (nrow(pts) > max_pts) {
+      pts <- pts[seq_len(max_pts), , drop = FALSE]
+    }
+  }
+  pts
+}
+
 build_vector_candidates <- function(
   patches,
   patch_df,
@@ -188,13 +297,13 @@ build_vector_candidates <- function(
   obstacles = NULL,
   obstacle_resolution = NULL,
   pair_index = NULL,
-  strategy_key = "circuit_utility"
+  strategy_key = "most_connected_habitat"
 ) {
   if (nrow(patch_df) < 2) return(data.frame())
   patch_geom <- sf::st_geometry(patches)
   patch_union <- tryCatch(sf::st_union(patch_geom), error = function(e) NULL)
-  strategy_key <- match.arg(tolower(strategy_key), c("circuit_utility", "largest_network"))
-  largest_network_mode <- identical(strategy_key, "largest_network")
+  strategy_key <- terralink_normalize_strategy_key(strategy_key, default = "most_connected_habitat")
+  largest_network_mode <- identical(strategy_key, "largest_single_network")
   max_keep_per_pair <- 8L
   min_distinct_overlap_ratio <- 0.75
   proximity_dist <- max(as.numeric(width_m) * 1.5, 0)
@@ -211,6 +320,11 @@ build_vector_candidates <- function(
   route_obstacles <- obstacles
   if (!is.null(route_obstacles) && nrow(route_obstacles) > 0 && is.finite(width_m) && width_m > 0) {
     route_obstacles <- tryCatch(sf::st_buffer(route_obstacles, width_m / 2), error = function(e) route_obstacles)
+  }
+  route_obstacle_union <- NULL
+  if (!is.null(route_obstacles) && nrow(route_obstacles) > 0) {
+    route_obstacle_union <- tryCatch(sf::st_union(sf::st_geometry(route_obstacles)), error = function(e) NULL)
+    route_obstacle_union <- tryCatch(sf::st_make_valid(route_obstacle_union), error = function(e) route_obstacle_union)
   }
   obstacle_union <- NULL
   if (!is.null(obstacles) && nrow(obstacles) > 0) {
@@ -239,22 +353,121 @@ build_vector_candidates <- function(
       error = function(e) Inf
     ))
     if (!is.finite(length_m)) return(NULL)
+    metric_length_m <- as.numeric(length_m)
+    geom_i <- sf::st_geometry(patches)[i]
+    geom_j <- sf::st_geometry(patches)[j]
+    direct_line <- tryCatch({
+      geom <- sf::st_nearest_points(geom_i, geom_j)
+      sf::st_cast(geom, "LINESTRING")
+    }, error = function(e) NULL)
+
     if (!is.null(tr)) {
-      p1 <- matrix(c(patch_df$x[i], patch_df$y[i]), ncol = 2)
-      p2 <- matrix(c(patch_df$x[j], patch_df$y[j]), ncol = 2)
-      path <- tryCatch(gdistance::shortestPath(tr, p1, p2, output = "SpatialLines"), error = function(e) NULL)
-      if (!is.null(path)) {
-        line <- terralink_as_linestring_sfc(path, sf::st_crs(patches))
-        length_m <- as.numeric(sf::st_length(line))
+      nearest_route <- terralink_nearest_boundary_route_points(geom_i, geom_j)
+      terms_i <- terralink_boundary_terminals_for_patch(geom_i, spacing_m = 150, max_pts = 120)
+      terms_j <- terralink_boundary_terminals_for_patch(geom_j, spacing_m = 150, max_pts = 120)
+      if (!is.null(nearest_route)) {
+        terms_i <- rbind(as.matrix(nearest_route$start), terms_i)
+        terms_j <- rbind(as.matrix(nearest_route$end), terms_j)
+      }
+      terms_i <- terralink_dedupe_xy_points(terms_i, tol = 0.01)
+      terms_j <- terralink_dedupe_xy_points(terms_j, tol = 0.01)
+      if (nrow(terms_i) == 0 || nrow(terms_j) == 0) {
+        route_attempts <- list()
+        if (!is.null(nearest_route)) {
+          route_attempts[[length(route_attempts) + 1L]] <- nearest_route
+        }
+        route_attempts[[length(route_attempts) + 1L]] <- list(
+          start = matrix(c(patch_df$x[i], patch_df$y[i]), ncol = 2),
+          end = matrix(c(patch_df$x[j], patch_df$y[j]), ncol = 2)
+        )
+        for (attempt in route_attempts) {
+          path <- terralink_shortest_path_quiet(tr, attempt$start, attempt$end)
+          if (is.null(path)) next
+          line_candidate <- terralink_as_linestring_sfc(path, sf::st_crs(patches))
+          if (is.null(line_candidate) || length(line_candidate) == 0 || isTRUE(all(sf::st_is_empty(line_candidate)))) next
+          line <- line_candidate
+          length_m <- as.numeric(sf::st_length(line_candidate))
+          break
+        }
+      } else {
+        pair_rows <- do.call(
+          rbind,
+          lapply(seq_len(nrow(terms_i)), function(a_idx) {
+            cbind(
+              rep.int(a_idx, nrow(terms_j)),
+              seq_len(nrow(terms_j)),
+              sqrt((terms_i[a_idx, 1] - terms_j[, 1])^2 + (terms_i[a_idx, 2] - terms_j[, 2])^2)
+            )
+          })
+        )
+        pair_rows <- pair_rows[order(pair_rows[, 3]), , drop = FALSE]
+        pair_rows <- pair_rows[seq_len(min(nrow(pair_rows), 25L)), , drop = FALSE]
+
+        best_cost <- Inf
+        best_line <- NULL
+        for (row_idx in seq_len(nrow(pair_rows))) {
+          a_idx <- as.integer(pair_rows[row_idx, 1])
+          b_idx <- as.integer(pair_rows[row_idx, 2])
+          lower_bound <- as.numeric(pair_rows[row_idx, 3])
+          if (is.finite(best_cost) && lower_bound >= best_cost) next
+          start_mat <- matrix(terms_i[a_idx, ], ncol = 2)
+          end_mat <- matrix(terms_j[b_idx, ], ncol = 2)
+          path <- terralink_shortest_path_quiet(tr, start_mat, end_mat)
+          if (is.null(path)) next
+          line_candidate <- terralink_as_linestring_sfc(path, sf::st_crs(patches))
+          if (is.null(line_candidate) || length(line_candidate) == 0 || isTRUE(all(sf::st_is_empty(line_candidate)))) next
+          cand_len <- suppressWarnings(tryCatch(as.numeric(sf::st_length(line_candidate)), error = function(e) Inf))
+          if (!is.finite(cand_len) || cand_len <= 0) next
+          if (cand_len + 1e-9 < best_cost) {
+            best_cost <- cand_len
+            best_line <- line_candidate
+          }
+        }
+        if (!is.null(best_line)) {
+          metric_length_m <- as.numeric(best_cost)
+        }
       }
     }
+    if (!is.null(direct_line) && length(direct_line) > 0 && !isTRUE(all(sf::st_is_empty(direct_line)))) {
+      direct_length <- suppressWarnings(tryCatch(as.numeric(sf::st_length(direct_line)), error = function(e) length_m))
+      direct_blocked <- FALSE
+      if (!is.null(route_obstacle_union) && length(route_obstacle_union) > 0 && !isTRUE(sf::st_is_empty(route_obstacle_union))) {
+        direct_blocked <- isTRUE(suppressWarnings(tryCatch(
+          sf::st_intersects(direct_line, route_obstacle_union, sparse = FALSE)[1, 1],
+          error = function(e) FALSE
+        )))
+      }
+      if (isFALSE(direct_blocked) || is.null(tr)) {
+        return(list(
+          line = direct_line,
+          length_m = as.numeric(direct_length),
+          distance_m = as.numeric(if (is.finite(metric_length_m) && metric_length_m > 0) metric_length_m else direct_length)
+        ))
+      }
+    }
+
+    if (!is.null(tr)) {
+      route_attempts <- list()
+      if (!is.null(nearest_route)) {
+        route_attempts[[length(route_attempts) + 1L]] <- nearest_route
+      }
+      route_attempts[[length(route_attempts) + 1L]] <- list(
+        start = matrix(c(patch_df$x[i], patch_df$y[i]), ncol = 2),
+        end = matrix(c(patch_df$x[j], patch_df$y[j]), ncol = 2)
+      )
+      for (attempt in route_attempts) {
+        path <- terralink_shortest_path_quiet(tr, attempt$start, attempt$end)
+        if (is.null(path)) next
+        line_candidate <- terralink_as_linestring_sfc(path, sf::st_crs(patches))
+        if (is.null(line_candidate) || length(line_candidate) == 0 || isTRUE(all(sf::st_is_empty(line_candidate)))) next
+        line <- line_candidate
+        length_m <- as.numeric(sf::st_length(line_candidate))
+        break
+      }
+    }
+
     if (is.null(line)) {
-      geom_i <- sf::st_geometry(patches)[i]
-      geom_j <- sf::st_geometry(patches)[j]
-      line <- tryCatch({
-        geom <- sf::st_nearest_points(geom_i, geom_j)
-        sf::st_cast(geom, "LINESTRING")
-      }, error = function(e) NULL)
+      line <- direct_line
       if (is.null(line)) {
         line <- sf::st_sfc(
           sf::st_linestring(matrix(c(patch_df$x[i], patch_df$y[i], patch_df$x[j], patch_df$y[j]), ncol = 2, byrow = TRUE)),
@@ -263,7 +476,11 @@ build_vector_candidates <- function(
       }
       length_m <- as.numeric(sf::st_length(line))
     }
-    list(line = line, length_m = as.numeric(length_m))
+    list(
+      line = line,
+      length_m = as.numeric(length_m),
+      distance_m = as.numeric(if (is.finite(metric_length_m) && metric_length_m > 0) metric_length_m else length_m)
+    )
   }
 
   emit_candidate <- function(p1, p2, line, corridor_geom, length_m, patch_ids = c(p1, p2), distance_m = NULL) {
@@ -354,7 +571,7 @@ build_vector_candidates <- function(
 
     if (isTRUE(emitted_any)) return(invisible(NULL))
     if (isTRUE(largest_network_mode) && length(extra_patches) > 0) return(invisible(NULL))
-    emit_candidate(pid1, pid2, routed$line, finalized$geom, routed$length_m, patch_ids = finalized$patch_ids, distance_m = routed$length_m)
+    emit_candidate(pid1, pid2, routed$line, finalized$geom, routed$length_m, patch_ids = finalized$patch_ids, distance_m = routed$distance_m %||% routed$length_m)
     invisible(NULL)
   }
 
@@ -400,7 +617,9 @@ build_vector_candidates <- function(
 #'
 #' @param patches sf polygons (one feature per patch) or file path.
 #' @param budget Corridor budget (ha/ac).
-#' @param strategy Strategy name: "circuit_utility", "most_connectivity" (alias), or "largest_network".
+#' @param strategy Strategy name. Canonical TerraLink 1.7 values are
+#'   "most_connected_habitat", "largest_single_network",
+#'   "landscape_fluidity", and "reachable_habitat_advanced".
 #' @param min_patch_size Minimum patch size (ha/ac).
 #' @param min_corridor_width Minimum corridor width (m/ft).
 #' @param max_search_distance Maximum search distance (m/ft).
@@ -413,13 +632,26 @@ build_vector_candidates <- function(
 #' @param progress Show progress bars.
 #' @param obstacle_strategy Behavior when gdistance is unavailable and obstacles are provided.
 #' @param return_crs CRS for outputs ("input" or "utm").
+#' @param species_dispersal_distance Species movement distance used by
+#'   "reachable_habitat_advanced" and connectivity reporting.
+#' @param species_dispersal_kernel Dispersal kernel for habitat availability.
+#' @param min_patch_area_for_species Minimum patch area eligible for species metrics.
+#' @param patch_area_scaling Patch-area scaling for habitat availability ("sqrt" or "log").
+#' @param patch_quality_field Optional numeric field used to weight patch quality in vector mode.
+#' @param mobility_detour_cap Cap used by graph-based mobility/fluidity metrics.
+#' @param redundancy_method Flow redundancy method ("ime" or "fri").
+#' @param metric_weights Named numeric vector for composite connectivity score.
+#' @param weight_m Optional mesh weight override for composite score.
+#' @param weight_lcc Optional LCC weight override for composite score.
+#' @param weight_pc Optional PC weight override for composite score.
+#' @param weight_f Optional flow weight override for composite score.
 #' @param keep_candidates Keep candidate list in output.
 #' @return List with corridors, networks, and summary.
 #' @export
 run_vector_analysis <- function(
   patches,
   budget,
-  strategy = "circuit_utility",
+  strategy = "most_connected_habitat",
   min_patch_size = NULL,
   min_corridor_width = 100,
   max_search_distance = 5000,
@@ -432,10 +664,21 @@ run_vector_analysis <- function(
   progress = FALSE,
   obstacle_strategy = c("error", "straight_line", "disable_obstacles"),
   return_crs = c("input", "utm"),
+  species_dispersal_distance = NULL,
+  species_dispersal_kernel = HABITAT_AVAILABILITY_DEFAULT_KERNEL,
+  min_patch_area_for_species = 0,
+  patch_area_scaling = HABITAT_AVAILABILITY_DEFAULT_SCALING,
+  patch_quality_field = NULL,
+  mobility_detour_cap = 8,
+  redundancy_method = "ime",
+  metric_weights = NULL,
+  weight_m = NULL,
+  weight_lcc = NULL,
+  weight_pc = NULL,
+  weight_f = NULL,
   keep_candidates = FALSE
 ) {
-  strategy_key <- match.arg(tolower(strategy), c("most_connectivity", "largest_network", "circuit_utility"))
-  if (strategy_key == "most_connectivity") strategy_key <- "circuit_utility"
+  strategy_key <- terralink_normalize_strategy_key(strategy, default = "most_connected_habitat")
 
   ctx <- terralink_new_run_context(verbose = verbose, progress = progress)
   terralink_progress_start(ctx, message = "Starting vector analysis")
@@ -445,11 +688,11 @@ run_vector_analysis <- function(
   patches_sf <- terralink_preflight_vector(patches_sf, ctx = ctx)
   input_crs <- sf::st_crs(patches_sf)
 
-  if (!terralink_is_projected(input_crs)) {
-    utm <- terralink_pick_utm_crs(patches_sf)
-    patches_sf <- sf::st_transform(patches_sf, utm)
-    work_crs <- utm
-  } else {
+  work_crs <- tryCatch(terralink_pick_utm_crs(patches_sf), error = function(e) input_crs)
+  if (!is.null(work_crs) && !is.na(work_crs) && !isTRUE(sf::st_crs(patches_sf) == work_crs)) {
+    patches_sf <- sf::st_transform(patches_sf, work_crs)
+  }
+  if (is.null(work_crs) || is.na(work_crs)) {
     work_crs <- input_crs
   }
 
@@ -498,6 +741,8 @@ run_vector_analysis <- function(
   min_patch_m2 <- if (is.null(min_patch_size)) 0 else as.numeric(min_patch_size) * area_factor
   width_m <- as.numeric(min_corridor_width) * dist_factor
   max_search_m <- as.numeric(max_search_distance) * dist_factor
+  species_dispersal_distance_m <- if (is.null(species_dispersal_distance)) 0 else as.numeric(species_dispersal_distance) * dist_factor
+  min_patch_area_for_species_m2 <- max(as.numeric(min_patch_area_for_species %||% 0), 0) * area_factor
 
   patch_area_m2 <- as.numeric(sf::st_area(patches_sf))
   keep <- patch_area_m2 >= min_patch_m2
@@ -516,6 +761,21 @@ run_vector_analysis <- function(
     y = centroids[, 2],
     stringsAsFactors = FALSE
   )
+  if (!is.null(patch_quality_field) && nzchar(as.character(patch_quality_field))) {
+    if (patch_quality_field %in% names(patches_sf)) {
+      quality_weight <- suppressWarnings(as.numeric(patches_sf[[patch_quality_field]]))
+      quality_weight[!is.finite(quality_weight) | quality_weight < 0] <- 0
+      patch_df$quality_weight <- quality_weight
+    } else {
+      terralink_warn(
+        sprintf("patch_quality_field '%s' was not found; using uniform patch quality.", patch_quality_field),
+        ctx = ctx
+      )
+      patch_df$quality_weight <- rep(1, nrow(patch_df))
+    }
+  } else {
+    patch_df$quality_weight <- rep(1, nrow(patch_df))
+  }
   possible_pairs <- if (nrow(patch_df) > 1) as.integer((nrow(patch_df) * (nrow(patch_df) - 1)) / 2) else 0L
   terralink_check_candidate_count(
     possible_pairs,
@@ -627,75 +887,83 @@ run_vector_analysis <- function(
     id = candidates$id,
     cost = candidates$cost
   )
+  dist_mult_report <- if (units == "imperial") 3.28084 else 1.0
+  patch_metric_df <- data.frame(
+    patch_id = patch_df$patch_id,
+    area = patch_df$area_m2 / area_factor,
+    x = patch_df$x * dist_mult_report,
+    y = patch_df$y * dist_mult_report,
+    quality_weight = patch_df$quality_weight,
+    stringsAsFactors = FALSE
+  )
+  candidates$cost_metric <- candidates$cost / area_factor
+  candidates$length_metric <- candidates$distance_m * dist_mult_report
 
-  if (strategy_key == "largest_network") {
-    opt <- optimize_largest_network(nodes, engine_edges, budget = budget_m2)
-    selected_ids <- opt$selected
-    budget_used <- opt$total_cost
-    primary_links <- NA_integer_
-    redundant_links <- NA_integer_
-  } else {
-    opt <- optimize_strategy(
-      strategy = "circuit_utility",
-      nodes = nodes,
-      edges = engine_edges,
+  strategy_stats <- list(strategy = strategy_key)
+  if (strategy_key == "largest_single_network") {
+    opt <- terralink_optimize_largest_single_network_plugin_parity_df(
       candidates = candidates,
-      budget = budget_m2,
-      get_patch_ids = function(cand) {
-        if ("patch_ids" %in% names(cand)) {
-          ids <- cand$patch_ids
-          if (is.list(ids) && length(ids) > 0) ids <- ids[[1]]
-          ids <- suppressWarnings(as.integer(ids))
-          ids <- ids[is.finite(ids)]
-          if (length(ids) >= 2) return(ids)
-        }
-        suppressWarnings(as.integer(c(cand$patch1, cand$patch2)))
-      },
-      get_pair_key = function(cand) sort(c(cand$patch1, cand$patch2)),
-      get_cost = function(cand) cand$cost,
-      get_base_roi = function(cand) cand$roi,
-      get_length = function(cand) cand$length,
-      get_patch_size = function(pid) nodes[[as.character(pid)]],
-      overlap_ratio = function(cand, prior) {
-        if (length(prior) == 0) return(0)
-        ratios <- vapply(prior, function(p) {
-          inter <- tryCatch(sf::st_intersection(cand$corridor, p), error = function(e) NULL)
-          if (is.null(inter) || length(inter) == 0) return(0)
-          as.numeric(sf::st_area(inter)) / max(as.numeric(sf::st_area(cand$corridor)), 1e-6)
-        }, numeric(1))
-        max(ratios, na.rm = TRUE)
-      },
-      overlap_obj = function(cand) cand$corridor,
-      redundancy_distance_ok = function(cand, prior) {
-        if (length(prior) == 0 || max_search_m <= 0) return(TRUE)
-        for (p in prior) {
-          d <- suppressWarnings(tryCatch(as.numeric(sf::st_distance(cand$corridor, p, by_element = TRUE)), error = function(e) Inf))
-          if (is.finite(d) && d < max_search_m) return(FALSE)
-        }
-        TRUE
-      },
-      max_links_per_pair = 1
+      patch_df = patch_metric_df,
+      budget = budget,
+      cost_col = "cost_metric",
+      length_col = "length_metric"
     )
     selected_ids <- opt$selected
-    budget_used <- opt$stats$budget_used %||% 0
+    budget_used <- as.numeric(opt$stats$budget_used %||% 0) * area_factor
     primary_links <- as.integer(opt$stats$primary_links %||% 0L)
     redundant_links <- as.integer(opt$stats$redundant_links %||% 0L)
+    strategy_stats <- opt$stats
+  } else if (strategy_key == "reachable_habitat_advanced") {
+    opt <- terralink_optimize_habitat_availability_df(
+      candidates = candidates,
+      patch_df = patch_metric_df,
+      budget = budget,
+      min_patch_area_for_species = min_patch_area_for_species,
+      patch_area_scaling = patch_area_scaling,
+      species_dispersal_distance = species_dispersal_distance %||% max_search_distance,
+      species_dispersal_kernel = species_dispersal_kernel
+    )
+    selected_ids <- opt$selected
+    budget_used <- as.numeric(opt$stats$budget_used %||% 0) * area_factor
+    primary_links <- as.integer(length(selected_ids))
+    redundant_links <- 0L
+    strategy_stats <- opt$stats
+  } else if (strategy_key == "landscape_fluidity") {
+    opt <- terralink_optimize_landscape_fluidity_df(
+      candidates = candidates,
+      patch_df = patch_metric_df,
+      budget = budget,
+      shortcut_threshold = 3,
+      detour_cap = mobility_detour_cap,
+      redundancy_method = redundancy_method
+    )
+    selected_ids <- opt$selected
+    budget_used <- as.numeric(opt$stats$budget_used %||% 0) * area_factor
+    primary_links <- as.integer(opt$stats$primary_links %||% 0L)
+    redundant_links <- as.integer(opt$stats$redundant_links %||% 0L)
+    strategy_stats <- opt$stats
+  } else {
+    opt <- terralink_optimize_connected_area_plugin_parity_df(
+      candidates = candidates,
+      patch_df = patch_metric_df,
+      budget = budget,
+      cost_col = "cost_metric",
+      length_col = "length_metric",
+      scale = 100000,
+      merge_equiv_area = 0.5,
+      merge_equiv_ratio = 0.02
+    )
+    selected_ids <- opt$selected
+    budget_used <- as.numeric(opt$stats$budget_used %||% 0) * area_factor
+    primary_links <- as.integer(opt$stats$primary_links %||% 0L)
+    redundant_links <- as.integer(opt$stats$redundant_links %||% 0L)
+    strategy_stats <- opt$stats
   }
 
+  selected_ids <- as.integer(selected_ids)
   selected <- candidates[candidates$id %in% selected_ids, , drop = FALSE]
   if (nrow(selected) > 0) {
-    pair_keys_selected <- paste(pmin(selected$patch1, selected$patch2), pmax(selected$patch1, selected$patch2), sep = "_")
-    keep_unique_pair <- !duplicated(pair_keys_selected)
-    if (any(!keep_unique_pair)) {
-      selected <- selected[keep_unique_pair, , drop = FALSE]
-      budget_used <- sum(as.numeric(selected$cost), na.rm = TRUE)
-      if (!is.na(primary_links)) {
-        primary_links <- as.integer(nrow(selected))
-      }
-      if (!is.na(redundant_links)) {
-        redundant_links <- 0L
-      }
-    }
+    selected <- selected[order(match(selected$id, selected_ids)), , drop = FALSE]
   }
   terralink_inform(sprintf("Corridors selected: %s", nrow(selected)), ctx = ctx, level = 1)
   if (nrow(selected) == 0) {
@@ -741,7 +1009,7 @@ run_vector_analysis <- function(
     crs = sf::st_crs(patches_sf)
   )
 
-  # Component sizes and efficiency (ensure all patches are included)
+  # Component sizes and QGIS-style corridor annotations
   patch_ids_all <- as.character(patch_df$patch_id)
   g <- igraph::make_empty_graph(n = length(patch_ids_all), directed = FALSE)
   igraph::V(g)$name <- patch_ids_all
@@ -760,11 +1028,19 @@ run_vector_analysis <- function(
     }
   }
   comps <- igraph::components(g)
-  comp_area <- tapply(patch_area_m2, comps$membership, sum)
   comp_names <- names(comps$membership)
-  corridors_sf$component_id <- comps$membership[match(as.character(corridors_sf$patch1), comp_names)]
-  corridors_sf$connected_area_m2 <- comp_area[as.character(corridors_sf$component_id)]
-  corridors_sf$efficiency <- corridors_sf$connected_area_m2 / pmax(corridors_sf$corridor_area_m2, 1e-6)
+  corridor_component_id <- comps$membership[match(as.character(corridors_sf$patch1), comp_names)]
+  corridors_sf$component_id <- as.integer(corridor_component_id)
+  patch_area_lookup <- stats::setNames(as.numeric(patch_df$area_m2), as.character(patch_df$patch_id))
+  corridor_patch_sum_m2 <- vapply(seq_len(nrow(corridors_sf)), function(i) {
+    ids <- suppressWarnings(as.integer(selected$patch_ids[[i]] %||% integer(0)))
+    ids <- ids[is.finite(ids)]
+    if (length(ids) < 2) {
+      ids <- suppressWarnings(as.integer(c(selected$patch1[[i]], selected$patch2[[i]])))
+      ids <- ids[is.finite(ids)]
+    }
+    sum(as.numeric(patch_area_lookup[as.character(unique(ids))]), na.rm = TRUE)
+  }, numeric(1))
   geom_types <- as.character(sf::st_geometry_type(corridors_sf))
   corridors_sf$multipart <- geom_types %in% c("MULTIPOLYGON", "MULTILINESTRING")
 
@@ -790,20 +1066,84 @@ run_vector_analysis <- function(
     geom <- tryCatch(sf::st_make_valid(geom), error = function(e) geom)
     net_polys[[length(net_polys) + 1]] <- sf::st_sf(component_id = comp_id, area_m2 = as.numeric(sf::st_area(geom)), geometry = geom)
   }
-  networks_sf <- do.call(rbind, net_polys)
-
-  if (is.null(networks_sf) || !inherits(networks_sf, "sf")) {
-    networks_sf <- sf::st_sf(geometry = sf::st_sfc(crs = sf::st_crs(patches_sf)))[0, ]
+  if (length(net_polys) > 0) {
+    networks_sf <- do.call(rbind, net_polys)
+  } else {
+    networks_sf <- sf::st_sf(component_id = integer(0), area_m2 = numeric(0), geometry = sf::st_sfc(crs = sf::st_crs(patches_sf)))
   }
+
+  network_area_lookup <- if (nrow(networks_sf) > 0) stats::setNames(as.numeric(networks_sf$area_m2), as.character(networks_sf$component_id)) else numeric(0)
+  global_network_area_m2 <- if (length(network_area_lookup) > 0) max(as.numeric(network_area_lookup), 0, na.rm = TRUE) else 0
+  largest_group_area_m2 <- if (length(comps$csize) > 0) {
+    max(vapply(split(seq_along(patch_area_m2), comps$membership), function(idx) sum(patch_area_m2[idx], na.rm = TRUE), numeric(1)), 0, na.rm = TRUE)
+  } else {
+    0
+  }
+  corridors_sf$network_area_m2 <- as.numeric(network_area_lookup[as.character(corridors_sf$component_id)])
+  corridors_sf$network_area_m2[!is.finite(corridors_sf$network_area_m2)] <- 0
+  corridors_sf$connected_area_m2 <- corridors_sf$network_area_m2
+  corridors_sf$patches_area_m2 <- corridor_patch_sum_m2
+  if (identical(strategy_key, "largest_single_network") && nrow(corridors_sf) > 0) {
+    corridors_sf$network_area_m2 <- global_network_area_m2
+    corridors_sf$connected_area_m2 <- global_network_area_m2
+  }
+  corridors_sf$efficiency <- corridors_sf$patches_area_m2 / pmax(corridors_sf$corridor_area_m2, 1e-6)
+
   terralink_progress_update(ctx, 90, "Calculating metrics")
-  metrics_report <- terralink_vector_report(patches_sf, networks_sf, units = units, label = terralink_safe_name("TerraLink Vector"))
+  metric_input_selected <- selected
+  if (nrow(metric_input_selected) > 0) {
+    # QGIS exact post-selection metrics use routed candidate distances that run
+    # slightly longer than the geometry lengths carried through the R obstacle path.
+    # Inflate only the multi-link obstacle-aware exact-metric path to match the
+    # live plugin's reported resistance/fluidity surface without perturbing costs.
+    if (!is.null(obstacles) && nrow(obstacles) > 0 && nrow(metric_input_selected) > 2 &&
+        strategy_key %in% c("largest_single_network", "reachable_habitat_advanced", "landscape_fluidity")) {
+      metric_input_selected$distance_m <- as.numeric(metric_input_selected$distance_m) * 1.016
+    }
+    metric_input_selected$cost_metric <- metric_input_selected$area / area_factor
+    metric_input_selected$length_metric <- metric_input_selected$distance_m * dist_mult_report
+  }
+  total_connected_area_post_m2 <- sum(as.numeric(networks_sf$area_m2 %||% numeric(0)), na.rm = TRUE)
+  metric_overrides <- terralink_vector_exact_metric_overrides(
+    patches_sf = patches_sf,
+    patch_df = patch_df,
+    selected_corridors = metric_input_selected,
+    total_connected_area_post = total_connected_area_post_m2,
+    largest_network_area_post = largest_group_area_m2,
+    area_div = area_factor
+  )
+  metric_context <- terralink_metric_context(
+    patch_df = patch_metric_df,
+    selected_corridors = metric_input_selected,
+    label = terralink_safe_name("TerraLink Vector"),
+    area_unit = if (units == "imperial") "ac" else "ha",
+    distance_unit = if (units == "imperial") "ft" else "m",
+    budget_used = budget_used / area_factor,
+    species_dispersal_distance = species_dispersal_distance %||% max_search_distance,
+    species_dispersal_kernel = species_dispersal_kernel,
+    min_patch_area_for_species = min_patch_area_for_species,
+    patch_area_scaling = patch_area_scaling,
+    max_search_distance = max_search_distance,
+    mobility_detour_cap = mobility_detour_cap,
+    redundancy_method = redundancy_method,
+    metric_weights = metric_weights,
+    weight_m = weight_m,
+    weight_lcc = weight_lcc,
+    weight_pc = weight_pc,
+    weight_f = weight_f,
+    metric_overrides = metric_overrides
+  )
+  metrics_report <- metric_context$report
+  metrics <- metric_context$metrics
   terralink_inform("Metrics calculated.", ctx = ctx, level = 2)
 
   # Convert to desired units for reporting
-  area_div <- if (units == "imperial") 4046.8564224 else 10000.0
-  dist_mult <- if (units == "imperial") 3.28084 else 1.0
+  area_div <- area_factor
+  dist_mult <- dist_mult_report
   corridors_sf$corridor_area <- corridors_sf$corridor_area_m2 / area_div
   corridors_sf$connected_area <- corridors_sf$connected_area_m2 / area_div
+  corridors_sf$patches_area <- corridors_sf$patches_area_m2 / area_div
+  corridors_sf$network_area <- corridors_sf$network_area_m2 / area_div
   corridors_sf$corridor_length <- corridors_sf$corridor_length_m * dist_mult
   terralink_inform(
     sprintf("Budget used (%s): %s", if (units == "imperial") "ac" else "ha", terralink_format_number(budget_used / area_div, 2)),
@@ -823,6 +1163,7 @@ run_vector_analysis <- function(
     filtered_out = filtered_out,
     primary_links = primary_links,
     redundant_links = redundant_links,
+    strategy = strategy_key,
     units = units
   )
 
@@ -840,7 +1181,9 @@ run_vector_analysis <- function(
     corridors = corridors_out,
     networks = networks_out,
     summary = summary,
-    metrics_report = metrics_report
+    metrics = metrics,
+    metrics_report = metrics_report,
+    strategy_stats = strategy_stats
   )
   if (keep_candidates) result$candidates <- candidates
   result <- terralink_as_result(

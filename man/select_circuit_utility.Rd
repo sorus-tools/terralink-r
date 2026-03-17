@@ -14,14 +14,20 @@ select_circuit_utility(
   get_length,
   get_patch_size,
   overlap_ratio,
+  global_overlap_ratio = NULL,
   overlap_obj,
   redundancy_distance_ok = NULL,
   overlap_reject_ratio = 0.3,
+  global_overlap_reject_ratio = 0.6,
   max_prior_per_pair = 3,
   diminishing_base = 0.5,
   max_links_per_pair = Inf,
   enable_bridge_pairs = TRUE,
   bridge_max_per_patch = 25,
+  distance_guard_for_primary = FALSE,
+  global_overlap_for_primary = FALSE,
+  parallel_dominance_ratio = 1.35,
+  parallel_overlap_penalty_floor = 0.2,
   shortcut_ratio_high = 3,
   shortcut_ratio_mid = 1.5,
   shortcut_ratio_low = 1.5,
@@ -49,11 +55,16 @@ select_circuit_utility(
 
 \item{overlap_ratio}{Function that returns overlap ratio vs prior objects.}
 
+\item{global_overlap_ratio}{Optional function that returns broader overlap ratio
+vs globally selected objects.}
+
 \item{overlap_obj}{Function that returns overlap object representation.}
 
 \item{redundancy_distance_ok}{Optional callback that can reject near-duplicate redundant corridors.}
 
 \item{overlap_reject_ratio}{Overlap ratio threshold for heavy redundancy penalty.}
+
+\item{global_overlap_reject_ratio}{Threshold for rejecting globally parallel candidates.}
 
 \item{max_prior_per_pair}{Maximum overlap objects retained per patch pair.}
 
@@ -64,6 +75,14 @@ select_circuit_utility(
 \item{enable_bridge_pairs}{Whether to pre-seed bridge corridor pairs.}
 
 \item{bridge_max_per_patch}{Max candidates retained per bridge midpoint patch.}
+
+\item{distance_guard_for_primary}{Whether to apply distance guard to primary links.}
+
+\item{global_overlap_for_primary}{Whether to apply global-overlap reject to primary links.}
+
+\item{parallel_dominance_ratio}{Shortcut dominance threshold for parallel penalties.}
+
+\item{parallel_overlap_penalty_floor}{Floor multiplier for global-parallel penalties.}
 
 \item{shortcut_ratio_high}{High shortcut ratio threshold.}
 

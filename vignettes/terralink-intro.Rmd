@@ -15,10 +15,65 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 
 TerraLink helps you build habitat corridors between patches, using either raster or vector inputs.
 
+Raster inputs are polygonized and analyzed through the vector corridor pipeline, matching the current QGIS plugin workflow.
+
+The package is designed for scenario-based corridor planning:
+
+1. load habitat data
+2. choose the optimization mode that matches the ecological outcome you want
+3. set approximate planning constraints such as budget, corridor width, and search distance
+4. run several plausible scenarios
+5. compare the PRE/POST outputs and keep the scenario that best fits the planning goal
+
+This is usually more useful than searching for a single "perfect" run, because different TerraLink modes reward different connectivity improvements.
+
+The canonical TerraLink 1.7 strategies are:
+
+- `most_connected_habitat`
+- `largest_single_network`
+- `reachable_habitat_advanced`
+- `landscape_fluidity`
+
+## Choosing a strategy
+
+The four canonical strategies are not just aliases:
+
+- `largest_single_network`: favors one dominant connected backbone
+- `most_connected_habitat`: favors broad structural connected area across the landscape
+- `landscape_fluidity`: favors easier movement, route shortening, and reduced bottlenecks
+- `reachable_habitat_advanced`: favors functionally reachable habitat under a dispersal assumption
+
+As a rule of thumb:
+
+- choose `most_connected_habitat` for structural integration
+- choose `largest_single_network` for consolidation
+- choose `landscape_fluidity` for movement quality and redundancy
+- choose `reachable_habitat_advanced` for species-oriented accessibility
+
 You can list packaged example scripts with:
 
 ```r
 terralink_examples()
+```
+
+You can also locate packaged sample data with:
+
+```r
+terralink_sample_data()
+```
+
+# Built-in sample data
+
+This package includes tiny sample files in `inst/extdata` so examples run immediately.
+
+```r
+library(terralink)
+
+paths <- terralink_sample_data()
+paths
+# paths["raster"]   -> habitat.tif
+# paths["vector"]   -> patches.gpkg
+# paths["obstacle"] -> impassable.gpkg
 ```
 
 # Raster workflow
@@ -27,17 +82,23 @@ terralink_examples()
 library(terralink)
 
 raster_result <- terralink_raster(
-  raster = "habitat.tif",
+  raster = terralink_sample_data("raster"),
   patch_values = 1,
-  budget = 50,
-  min_patch_size = 2,
+  obstacle_values = 2,
+  budget = 220,
+  min_patch_size = 10,
   min_corridor_width = 3,
-  max_search_distance = 600,
+  max_search_distance = 30,
+  corridor_cell_assignment = "sum_total_network_area",
   units = "pixels"
 )
 
 raster_result$summary
 ```
+
+Raster mode is useful for habitat grids and land-cover rasters. It can also use impassable values or ranges directly from the raster, which makes it a good fit for scenario testing with categorical land-cover maps.
+
+In the current R package, raster inputs are funneled through the vector engine after raster-to-polygon conversion rather than using a separate raster-only backend.
 
 # Vector workflow
 
@@ -45,16 +106,20 @@ raster_result$summary
 library(terralink)
 
 vector_result <- terralink_vector(
-  patches = "patches.gpkg",
-  budget = 1,
-  min_patch_size = 1,
+  patches = terralink_sample_data("vector"),
+  budget = 2.5,
+  min_patch_size = 0.1,
   min_corridor_width = 20,
-  max_search_distance = 5000,
+  max_search_distance = 500,
   units = "metric"
 )
 
 vector_result$summary
 ```
+
+Vector mode is useful when habitat patches are already represented as polygons. It often gives cleaner patch-level geometry and is usually the better choice when your planning inputs are already polygon features rather than classified rasters.
+
+Raster and vector runs can point in the same general direction without being numerically identical. The two pipelines use different spatial representations and corridor construction steps, so the safest interpretation is always scenario-vs-scenario within a single pipeline.
 
 # Barbados-style examples
 
@@ -77,12 +142,308 @@ Then use:
 
 ```r
 result <- terralink_vector(
-  patches = "patches.gpkg",
-  budget = 50,
-  min_patch_size = 5,
-  min_corridor_width = 200,
-  max_search_distance = 5000,
+  patches = terralink_sample_data("vector"),
+  budget = 2.5,
+  min_patch_size = 0.1,
+  min_corridor_width = 20,
+  max_search_distance = 500,
   units = "metric",
-  obstacle_layers = "impassable.gpkg"
+  obstacle_layers = terralink_sample_data("obstacle")
 )
 ```
+
+# Understanding the result object
+
+Every call to `terralink_raster()` or `terralink_vector()` returns a
+`terralink_result` object. Here is what is inside and how to access it:
+
+```r
+result <- terralink_vector(
+  patches = terralink_sample_data("vector"),
+  budget = 2.5,
+  min_patch_size = 0.1,
+  min_corridor_width = 20,
+  max_search_distance = 500,
+  units = "metric"
+)
+
+# Quick overview (uses the print method)
+result
+
+# Selected corridors as an sf object
+result$corridors
+
+# Patches used in the analysis
+result$patches
+
+# Connected networks (one polygon per component)
+result$networks
+
+# Run summary: budget used, corridors selected, patches, strategy
+result$summary
+
+# PRE/POST connectivity metrics (named list)
+result$metrics
+
+# Human-readable metrics report
+cat(result$metrics_report, sep = "\n")
+
+# Strategy-specific optimization stats
+result$strategy_stats
+
+# Warnings and diagnostics
+result$warnings
+result$diagnostics
+```
+
+For **raster mode**, the result also contains:
+
+- `result$corridor_raster` -- SpatRaster where corridor cells carry values according to `corridor_cell_assignment`
+- `result$contiguous_raster` -- SpatRaster labeling each contiguous patch-corridor network
+- `result$patch_table` -- data frame of patch attributes (id, area, centroid)
+
+# Interpreting metrics
+
+TerraLink computes PRE/POST metrics so you can measure the improvement that
+corridors provide. The key insight is: **compare the change (POST minus PRE)
+across scenarios, not the absolute values**.
+
+## Metric reference
+
+| Metric | What it measures | Higher is better? | When to focus on it |
+|--------|-----------------|-------------------|---------------------|
+| Total Connected Habitat Area | Habitat area in multi-patch networks | Yes | General structural connectivity |
+| Largest Network Area | Area of the biggest connected component | Yes | Consolidation into one backbone |
+| Habitat Availability | Dispersal-weighted reachable habitat | Yes | Species-specific accessibility |
+| Mean Effective Resistance | Average movement difficulty across the patch graph | **No** (lower = better) | Movement quality |
+| Habitat-Normalized Mesh | Effective mesh size / total habitat area | Yes | Fragmentation reduction |
+| Largest Connected Component Proportion (LCC) | Share of habitat in the largest network | Yes | Dominance of one network |
+| Probability of Connectivity (PC) | Area-weighted dispersal probability | Yes | Functional landscape connectivity |
+| Flow Redundancy (IME or FRI) | How many alternative routes exist | Yes | Route redundancy / resilience |
+| Strategic Mobility | Inverse detour ratio | Yes | Directness of travel |
+| Landscape Fluidity | Inverse mean path resistance | Yes | Overall ease of movement |
+| Composite Connectivity Score | Weighted blend of mesh, LCC, PC, flow | Yes | Single summary index |
+
+## Which metrics match which strategy?
+
+- **`most_connected_habitat`** aims to improve Total Connected Habitat Area and Mesh
+- **`largest_single_network`** aims to improve Largest Network Area and LCC
+- **`landscape_fluidity`** aims to improve Landscape Fluidity, Strategic Mobility, and Flow Redundancy
+- **`reachable_habitat_advanced`** aims to improve Habitat Availability and Mean Reachable Area
+
+All strategies produce all metrics, so you can always see the trade-offs.
+
+## Practical interpretation rules
+
+1. **Compare within the same pipeline** (raster-to-raster or vector-to-vector). Cross-pipeline comparisons are valid directionally but not numerically exact.
+2. **Compare PRE vs POST** to quantify the marginal value of corridors.
+3. **Compare scenarios** (different strategies, budgets, or corridor widths) side by side.
+4. **Look at diminishing returns**: if doubling the budget barely moves the metrics, you have likely reached saturation.
+5. **Avoid over-interpreting one run in isolation**. Absolute metric values depend on landscape configuration, CRS, and parameter choices.
+
+# Comparing scenarios
+
+The most effective way to use TerraLink is to run several scenarios and compare:
+
+```r
+library(terralink)
+
+patches_path <- terralink_sample_data("vector")
+
+# Run three strategies with the same budget
+strategies <- c("most_connected_habitat", "largest_single_network", "landscape_fluidity")
+
+results <- lapply(strategies, function(s) {
+  terralink_vector(
+    patches = patches_path,
+    budget = 2.5,
+    min_patch_size = 0.1,
+    min_corridor_width = 20,
+    max_search_distance = 500,
+    strategy = s,
+    units = "metric"
+  )
+})
+names(results) <- strategies
+
+# Build a comparison table
+comparison <- data.frame(
+  strategy = strategies,
+  corridors = sapply(results, function(r) r$summary$corridors_used),
+  budget_used = sapply(results, function(r) r$summary$budget_used),
+  connected_area_post = sapply(results, function(r)
+    r$metrics$total_connected_habitat_area_post),
+  largest_network_post = sapply(results, function(r)
+    r$metrics$largest_network_area_post),
+  fluidity_post = sapply(results, function(r)
+    r$metrics$landscape_fluidity_post),
+  habitat_avail_post = sapply(results, function(r)
+    r$metrics$habitat_availability_post)
+)
+print(comparison)
+```
+
+This table makes it easier to see which strategy aligns with which objective.
+In many landscapes, `most_connected_habitat` tends to favor total connected
+area, `largest_single_network` tends to favor the dominant component, and
+`landscape_fluidity` tends to favor fluidity and mobility scores, but the
+actual ranking depends on landscape structure and parameter choices.
+
+You can also compare budgets:
+
+```r
+budgets <- c(1.0, 2.5, 5.0, 10.0)
+
+budget_results <- lapply(budgets, function(b) {
+  terralink_vector(
+    patches = patches_path,
+    budget = b,
+    min_patch_size = 0.1,
+    min_corridor_width = 20,
+    max_search_distance = 500,
+    units = "metric"
+  )
+})
+
+budget_comparison <- data.frame(
+  budget = budgets,
+  corridors = sapply(budget_results, function(r) r$summary$corridors_used),
+  connected_area = sapply(budget_results, function(r)
+    r$metrics$total_connected_habitat_area_post),
+  composite_score = sapply(budget_results, function(r)
+    r$metrics$composite_connectivity_post)
+)
+print(budget_comparison)
+```
+
+# Parameter selection guide
+
+## Budget
+
+The budget is the total area available for corridor construction (hectares for
+metric, acres for imperial, pixels for raster pixel mode).
+
+- **Starting point**: often around 5--20% of total patch area.
+- **Too low**: few or no corridors are built; metrics barely change.
+- **Too high**: diminishing returns; budget is wasted on low-value links.
+- **Best practice**: sweep 3--5 budget levels and plot metrics vs. budget to
+  find the point of diminishing returns.
+
+## Minimum corridor width
+
+Controls how wide each corridor is buffered.
+
+- **Terrestrial mammals**: often start around 30--100 m (wider for
+  large-bodied species).
+- **Small birds / insects**: often start around 10--30 m.
+- **Raster pixel mode**: 1--5 pixels, depending on resolution.
+
+## Maximum search distance
+
+The maximum gap between patch edges that TerraLink will try to bridge.
+
+- Should be at or above the focal species' maximum non-habitat crossing distance.
+- **Typical starting range**: 500--5,000 m.
+- **If 0 corridors are generated**: try doubling this value.
+
+## Minimum patch size
+
+Drops patches smaller than this threshold before analysis.
+
+- Useful for removing noise in classified rasters.
+- **Raster mode**: 5--20 pixels is a common starting range.
+- **Vector mode**: 0.5--10 ha can be a reasonable first pass depending on the
+  species.
+
+## Species dispersal distance
+
+Used by the `reachable_habitat_advanced` strategy and all habitat availability
+metrics. Set this to the focal species' typical natal dispersal or daily
+movement range.
+
+- If not provided, `max_search_distance` is used as a rough proxy.
+- Units follow the analysis unit system (meters for metric, feet for imperial,
+  pixels for raster pixel mode).
+
+# Troubleshooting
+
+## No corridors generated
+
+If `result$summary$corridors_used` is 0:
+
+1. **Increase `max_search_distance`** -- patches may be farther apart than the
+   current limit.
+2. **Lower `min_patch_size`** -- small patches are being filtered out, leaving
+   too few to connect.
+3. **Increase `budget`** -- the cheapest available corridor may exceed the
+   current budget.
+4. **Check your data** -- make sure `patch_values` match actual raster cell
+   values, or that the sf object has valid polygon geometry.
+
+Check `result$diagnostics` for a message explaining why no corridors were
+selected.
+
+## Only one patch found
+
+TerraLink needs at least two patches to build corridors. If your raster or
+vector input resolves to a single patch:
+
+- Lower `min_patch_size` so that smaller fragments are retained.
+- Check `patch_connectivity` (raster mode): switching from 8 to 4 may split
+  one large patch into separate pieces.
+- Verify the input data has distinct habitat clusters.
+
+## gdistance / obstacle errors
+
+Obstacle-aware routing requires the `gdistance`, `raster`, and `sp` packages.
+If these are not installed and you pass `obstacle_values` or `obstacle_layers`,
+the behavior depends on `obstacle_strategy`:
+
+- `"error"` (default): stops with a clear error telling you to install the
+  packages.
+- `"straight_line"`: falls back to straight-line corridors (obstacles are
+  ignored).
+- `"disable_obstacles"`: silently drops obstacle data.
+
+Install the optional dependencies with:
+
+```r
+install.packages(c("gdistance", "raster", "sp"))
+```
+
+## Very large rasters
+
+For rasters with more than 10 million cells, set `allow_large = TRUE`. You
+may also want to reduce `max_pair_checks` or `max_candidates` to keep memory
+usage manageable.
+
+## Unexpected metric values
+
+- Metrics are **comparative**, not absolute. Always compare PRE vs POST or
+  scenario vs scenario.
+- Raster and vector pipelines may produce slightly different metric values for
+  the same landscape because of different spatial representations.
+- If a metric does not change between PRE and POST, the selected corridors may
+  not affect that particular aspect of connectivity.
+
+# Glossary
+
+| Term | Definition |
+|------|-----------|
+| **Corridor** | A strip of habitat connecting two patches, allowing species movement between them. |
+| **Patch** | A contiguous area of habitat. In raster mode, a group of connected habitat cells; in vector mode, a polygon feature. |
+| **Network / Component** | A group of patches linked by corridors into a single connected unit. |
+| **Budget** | The total area available for new corridor construction (hectares, acres, or pixels). |
+| **Effective resistance** | A measure of how difficult it is to move between two patches through the corridor network, based on circuit theory. Lower values mean easier movement. |
+| **Habitat availability** | The amount of habitat reachable from a given patch, weighted by the probability of dispersal (which decays with distance). |
+| **Dispersal kernel** | A function describing how the probability of an organism reaching a destination decreases with distance. TerraLink uses an exponential kernel. |
+| **Landscape fluidity** | The inverse of mean path resistance across the patch graph. Higher fluidity means the landscape is easier to traverse overall. |
+| **Flow redundancy** | A measure of how many alternative routes exist between patches. Higher redundancy means the network is more resilient to local disruptions. |
+| **Probability of connectivity (PC)** | An index combining patch area and inter-patch dispersal probability into a single measure of landscape connectivity. |
+| **Effective mesh size** | A fragmentation metric: the probability that two randomly chosen points in the habitat fall within the same connected component. Normalized by total habitat area in TerraLink. |
+| **LCC (Largest Connected Component)** | The proportion of total habitat area captured by the single largest network. |
+| **Strategic mobility** | The inverse of the mean detour ratio across the patch graph. Higher values mean more direct travel routes. |
+| **Composite connectivity score** | A user-configurable weighted blend of mesh, LCC, PC, and flow redundancy into a single index. |
+| **PRE / POST** | PRE = metric value with patches only (no corridors). POST = metric value after adding the selected corridors. The difference measures the improvement from corridors. |
+| **IME** | Inverse Mean Effective-resistance. A flow redundancy method based on circuit theory. |
+| **FRI** | Flow Redundancy Index. An alternative flow redundancy calculation. |

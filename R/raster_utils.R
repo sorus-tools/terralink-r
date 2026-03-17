@@ -111,18 +111,103 @@ build_patch_candidates <- function(patch_df, max_search_distance, raster_ref) {
   do.call(rbind, edges)
 }
 
+terralink_normalize_corridor_cell_assignment <- function(mode, default = "sum_total_network_area") {
+  raw <- default
+  if (!is.null(mode) && length(mode) > 0) {
+    candidate <- as.character(mode[[1]])
+    if (!is.na(candidate) && nzchar(trimws(candidate))) {
+      raw <- candidate
+    }
+  }
+  key <- tolower(trimws(raw))
+  key <- gsub("[[:space:]]+", "_", key)
+  legacy <- c(
+    sum_patches_connected = "sum_direct_connected_patches",
+    newly_connected_area = "sum_total_network_area"
+  )
+  if (key %in% names(legacy)) key <- unname(legacy[[key]])
+  if (!key %in% c("sum_direct_connected_patches", "sum_total_network_area", "efficiency")) {
+    key <- default
+  }
+  key
+}
+
+terralink_corridor_patch_ids <- function(corridors, i) {
+  pids <- integer(0)
+  if ("patch_ids" %in% names(corridors)) {
+    pids <- corridors$patch_ids[[i]]
+    if (is.list(pids) && length(pids) == 1) pids <- pids[[1]]
+  } else if (all(c("patch1", "patch2") %in% names(corridors))) {
+    pids <- c(corridors$patch1[[i]], corridors$patch2[[i]])
+  }
+  pids <- suppressWarnings(as.integer(pids))
+  unique(pids[is.finite(pids)])
+}
+
 #' Create corridor raster from selected edges
 #'
 #' @param labels SpatRaster labels.
 #' @param patch_df Patch summary data frame.
 #' @param corridors Data frame with patch1, patch2, and optional line geometry.
 #' @param min_corridor_width_px Width (pixels) for buffering corridors.
-#' @return SpatRaster with corridor cells set to 1.
+#' @param assignment_mode Corridor cell assignment mode.
+#' @return SpatRaster with corridor cells set by assignment mode.
 #' @export
-build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_width_px = 1) {
+build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_width_px = 1, assignment_mode = "sum_total_network_area") {
   out <- labels
   vals <- terra::values(out)
   vals[] <- NA
+  mode <- terralink_normalize_corridor_cell_assignment(assignment_mode)
+
+  patch_sizes <- numeric(0)
+  if (!is.null(patch_df) && nrow(patch_df) > 0 && "patch_id" %in% names(patch_df)) {
+    if ("cell_count" %in% names(patch_df)) {
+      patch_sizes <- as.numeric(patch_df$cell_count)
+    } else if ("area" %in% names(patch_df)) {
+      patch_sizes <- as.numeric(patch_df$area)
+    }
+    names(patch_sizes) <- as.character(patch_df$patch_id)
+  }
+
+  corridor_cell_value <- function(i) {
+    if (mode == "sum_direct_connected_patches") {
+      pids <- terralink_corridor_patch_ids(corridors, i)
+      if (length(pids) == 0) {
+        if ("connected_size" %in% names(corridors)) {
+          score <- suppressWarnings(as.numeric(corridors$connected_size[[i]]))
+          if (is.finite(score)) return(score)
+        }
+        return(0)
+      }
+      vals_local <- patch_sizes[as.character(pids)]
+      vals_local <- vals_local[is.finite(vals_local)]
+      return(as.numeric(sum(vals_local)))
+    }
+
+    if (mode == "efficiency") {
+      pids <- terralink_corridor_patch_ids(corridors, i)
+      vals_local <- patch_sizes[as.character(pids)]
+      vals_local <- vals_local[is.finite(vals_local)]
+      denom <- as.numeric(sum(vals_local))
+      if (!is.finite(denom) || denom <= 0) return(0)
+
+      area <- NA_real_
+      if ("cost" %in% names(corridors)) {
+        area <- suppressWarnings(as.numeric(corridors$cost[[i]]))
+      }
+      if ((!is.finite(area) || area <= 0) && "area" %in% names(corridors)) {
+        area <- suppressWarnings(as.numeric(corridors$area[[i]]))
+      }
+      if (!is.finite(area) || area <= 0) return(0)
+      return(area / denom)
+    }
+
+    if ("connected_size" %in% names(corridors)) {
+      score <- suppressWarnings(as.numeric(corridors$connected_size[[i]]))
+      if (is.finite(score)) return(score)
+    }
+    return(0)
+  }
 
   if (is.null(corridors) || nrow(corridors) == 0) {
     terra::values(out) <- vals
@@ -137,11 +222,7 @@ build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_widt
       cells <- as.integer(cells)
       cells <- unique(cells[is.finite(cells) & cells >= 1 & cells <= length(vals)])
       if (length(cells) == 0) next
-      score <- 1
-      if ("connected_size" %in% names(corridors)) {
-        score <- suppressWarnings(as.numeric(corridors$connected_size[[i]]))
-        if (!is.finite(score) || score <= 0) score <- 1
-      }
+      score <- corridor_cell_value(i)
       old <- vals[cells]
       old[is.na(old)] <- -Inf
       vals[cells] <- pmax(old, score)
@@ -158,11 +239,15 @@ build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_widt
     if (!inherits(lines, "sfc")) {
       lines <- sf::st_sfc(lines, crs = terra::crs(labels))
     }
-    line_vec <- terra::vect(lines)
+    line_sf <- sf::st_sf(
+      score = vapply(seq_len(nrow(corridors)), corridor_cell_value, numeric(1)),
+      geometry = lines
+    )
+    line_vec <- terra::vect(line_sf)
     if (min_corridor_width_px > 1) {
       line_vec <- terra::buffer(line_vec, width = width_map / 2)
     }
-    out <- terra::rasterize(line_vec, out, field = 1, background = NA)
+    out <- terra::rasterize(line_vec, out, field = "score", background = NA, fun = "max")
     return(out)
   }
 
@@ -174,6 +259,7 @@ build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_widt
   }
 
   for (i in seq_len(nrow(corridors))) {
+    score <- corridor_cell_value(i)
     p1 <- corridors$patch1[i]
     p2 <- corridors$patch2[i]
     xy1 <- get_xy(p1)
@@ -190,7 +276,9 @@ build_corridor_raster <- function(labels, patch_df, corridors, min_corridor_widt
     cells <- terra::cellFromXY(labels, cbind(xs, ys))
     cells <- unique(cells[!is.na(cells)])
     if (length(cells) > 0) {
-      vals[cells] <- 1
+      old <- vals[cells]
+      old[is.na(old)] <- -Inf
+      vals[cells] <- pmax(old, score)
     }
   }
 
@@ -444,6 +532,78 @@ terralink_bresenham_rc <- function(r1, c1, r2, c2) {
     }
   }
   out
+}
+
+terralink_point_line_distance_rc <- function(point_rc, start_rc, end_rc) {
+  px <- as.numeric(point_rc[[2]])
+  py <- as.numeric(point_rc[[1]])
+  x1 <- as.numeric(start_rc[[2]])
+  y1 <- as.numeric(start_rc[[1]])
+  x2 <- as.numeric(end_rc[[2]])
+  y2 <- as.numeric(end_rc[[1]])
+  dx <- x2 - x1
+  dy <- y2 - y1
+  if (!is.finite(dx) || !is.finite(dy) || (abs(dx) < 1e-12 && abs(dy) < 1e-12)) {
+    return(sqrt((px - x1)^2 + (py - y1)^2))
+  }
+  abs(dy * px - dx * py + x2 * y1 - y2 * x1) / sqrt(dx^2 + dy^2)
+}
+
+terralink_simplify_path_rdp_rc <- function(path_rc, epsilon = 1.5) {
+  if (is.null(path_rc) || nrow(path_rc) <= 2) return(path_rc)
+  start_rc <- path_rc[1, ]
+  end_rc <- path_rc[nrow(path_rc), ]
+  max_dist <- -Inf
+  max_idx <- NA_integer_
+  if (nrow(path_rc) > 2) {
+    for (idx in seq.int(2L, nrow(path_rc) - 1L)) {
+      dist <- terralink_point_line_distance_rc(path_rc[idx, ], start_rc, end_rc)
+      if (is.finite(dist) && dist > max_dist) {
+        max_dist <- dist
+        max_idx <- idx
+      }
+    }
+  }
+  if (!is.finite(max_dist) || max_dist <= as.numeric(epsilon)) {
+    return(rbind(start_rc, end_rc))
+  }
+  left <- terralink_simplify_path_rdp_rc(path_rc[seq_len(max_idx), , drop = FALSE], epsilon = epsilon)
+  right <- terralink_simplify_path_rdp_rc(path_rc[max_idx:nrow(path_rc), , drop = FALSE], epsilon = epsilon)
+  rbind(left, right[-1, , drop = FALSE])
+}
+
+terralink_simplify_corridor_cells <- function(path_cells, ncol, obstacle_block_mat = NULL, epsilon = 1.5) {
+  path_cells <- as.integer(path_cells)
+  if (length(path_cells) <= 3) return(unique(path_cells))
+  path_rc <- terralink_cells_to_rc(ncol, path_cells)
+  if (nrow(path_rc) <= 3) return(unique(path_cells))
+  waypoints <- terralink_simplify_path_rdp_rc(path_rc, epsilon = epsilon)
+  if (is.null(waypoints) || nrow(waypoints) < 2) return(unique(path_cells))
+
+  simplified_rc <- waypoints[1, , drop = FALSE]
+  if (nrow(waypoints) >= 2) {
+    for (idx in seq.int(2L, nrow(waypoints))) {
+      seg <- terralink_bresenham_rc(
+        waypoints[idx - 1L, 1],
+        waypoints[idx - 1L, 2],
+        waypoints[idx, 1],
+        waypoints[idx, 2]
+      )
+      if (nrow(seg) > 1L) {
+        simplified_rc <- rbind(simplified_rc, seg[-1, , drop = FALSE])
+      }
+    }
+  }
+
+  simplified_cells <- unique(as.integer(terralink_rc_to_cells(ncol, simplified_rc)))
+  if (!is.null(obstacle_block_mat) && length(simplified_cells) > 0) {
+    rrcc <- terralink_cells_to_rc(ncol, simplified_cells)
+    blocked <- obstacle_block_mat[cbind(rrcc[, 1], rrcc[, 2])]
+    if (any((!is.na(blocked)) & blocked)) {
+      return(unique(path_cells))
+    }
+  }
+  simplified_cells
 }
 
 terralink_corridor_offsets <- function(width_px) {
@@ -1180,7 +1340,12 @@ build_raster_candidates <- function(
       }
       if (is.null(route)) next
 
-      path_cells <- as.integer(route$path_cells)
+      path_cells <- terralink_simplify_corridor_cells(
+        path_cells = route$path_cells,
+        ncol = nc,
+        obstacle_block_mat = obstacle_block_mat,
+        epsilon = 1.5
+      )
       habitat_touched <- as.integer(route$habitat_cells)
       if (length(path_cells) == 0) next
       buffered <- terralink_inflate_cells(path_cells, nrow = nr, ncol = nc, offsets = corridor_offsets, passable_mask = inflation_ok)
@@ -1201,6 +1366,7 @@ build_raster_candidates <- function(
       length_map <- as.numeric(route$cost) * pixel_size
       if (!is.finite(length_map) || length_map <= 0) length_map <- as.numeric(seeds$d[[si]]) * pixel_size
       area_px <- as.numeric(length(buffered))
+      if (!terralink_raster_endpoint_area_guard_ok(p1, p2, area_px, size_by_patch)) next
       s1 <- size_by_patch[[as.character(p1)]]
       s2 <- size_by_patch[[as.character(p2)]]
       roi <- sqrt(max(0, s1) * max(0, s2)) / max(area_px, 1e-6)

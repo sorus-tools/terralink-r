@@ -4,7 +4,13 @@
 \alias{build_corridor_raster}
 \title{Create corridor raster from selected edges}
 \usage{
-build_corridor_raster(labels, patch_df, corridors, min_corridor_width_px = 1)
+build_corridor_raster(
+  labels,
+  patch_df,
+  corridors,
+  min_corridor_width_px = 1,
+  assignment_mode = "sum_total_network_area"
+)
 }
 \arguments{
 \item{labels}{SpatRaster labels.}
@@ -14,9 +20,11 @@ build_corridor_raster(labels, patch_df, corridors, min_corridor_width_px = 1)
 \item{corridors}{Data frame with patch1, patch2, and optional line geometry.}
 
 \item{min_corridor_width_px}{Width (pixels) for buffering corridors.}
+
+\item{assignment_mode}{Corridor cell assignment mode.}
 }
 \value{
-SpatRaster with corridor cells set to 1.
+SpatRaster with corridor cells set by assignment mode.
 }
 \description{
 Create corridor raster from selected edges

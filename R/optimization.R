@@ -110,6 +110,40 @@ terralink_pair_key_chr <- function(key) {
   paste(txt, collapse = "_")
 }
 
+terralink_normalize_strategy_key <- function(strategy, default = "most_connected_habitat") {
+  key <- tolower(trimws(as.character(strategy %||% default)))
+  key <- gsub("[[:space:]-]+", "_", key)
+  aliases <- c(
+    circuit_utility = "most_connected_habitat",
+    most_connectivity = "most_connected_habitat",
+    bigconnect = "most_connected_habitat",
+    most_connected_area = "most_connected_habitat",
+    largest_network = "largest_single_network",
+    habitat_availability = "reachable_habitat_advanced",
+    habitatavailability = "reachable_habitat_advanced",
+    habitat_available = "reachable_habitat_advanced",
+    ha = "reachable_habitat_advanced",
+    landscape_fluidity_a = "landscape_fluidity",
+    landscape_fluidity_a1 = "landscape_fluidity",
+    landscape_fluidity_1 = "landscape_fluidity",
+    lf_a = "landscape_fluidity",
+    lfa = "landscape_fluidity",
+    lf_a1 = "landscape_fluidity",
+    lfa1 = "landscape_fluidity"
+  )
+  if (key %in% names(aliases)) key <- aliases[[key]]
+  valid <- c(
+    "largest_single_network",
+    "most_connected_habitat",
+    "reachable_habitat_advanced",
+    "landscape_fluidity"
+  )
+  if (!key %in% valid) {
+    key <- terralink_normalize_strategy_key(default, default = "most_connected_habitat")
+  }
+  key
+}
+
 terralink_candidate_id <- function(cand, fallback_id) {
   if ("id" %in% names(cand)) {
     idv <- suppressWarnings(as.integer(cand$id[[1]]))
@@ -177,14 +211,21 @@ terralink_graph_add_or_update <- function(g, pids, weight) {
 #' @param get_length Function that returns candidate length for shortcut scoring.
 #' @param get_patch_size Function that returns patch size by id.
 #' @param overlap_ratio Function that returns overlap ratio vs prior objects.
+#' @param global_overlap_ratio Optional function that returns broader overlap ratio
+#'   vs globally selected objects.
 #' @param overlap_obj Function that returns overlap object representation.
 #' @param redundancy_distance_ok Optional callback that can reject near-duplicate redundant corridors.
 #' @param overlap_reject_ratio Overlap ratio threshold for heavy redundancy penalty.
+#' @param global_overlap_reject_ratio Threshold for rejecting globally parallel candidates.
 #' @param max_prior_per_pair Maximum overlap objects retained per patch pair.
 #' @param diminishing_base Base for redundancy penalty when no shortcut context is available.
 #' @param max_links_per_pair Optional hard limit of selected corridors per patch pair.
 #' @param enable_bridge_pairs Whether to pre-seed bridge corridor pairs.
 #' @param bridge_max_per_patch Max candidates retained per bridge midpoint patch.
+#' @param distance_guard_for_primary Whether to apply distance guard to primary links.
+#' @param global_overlap_for_primary Whether to apply global-overlap reject to primary links.
+#' @param parallel_dominance_ratio Shortcut dominance threshold for parallel penalties.
+#' @param parallel_overlap_penalty_floor Floor multiplier for global-parallel penalties.
 #' @param shortcut_ratio_high High shortcut ratio threshold.
 #' @param shortcut_ratio_mid Mid shortcut ratio threshold.
 #' @param shortcut_ratio_low Low shortcut ratio threshold.
@@ -203,14 +244,20 @@ select_circuit_utility <- function(
   get_length,
   get_patch_size,
   overlap_ratio,
+  global_overlap_ratio = NULL,
   overlap_obj,
   redundancy_distance_ok = NULL,
   overlap_reject_ratio = 0.30,
+  global_overlap_reject_ratio = 0.60,
   max_prior_per_pair = 3,
   diminishing_base = 0.5,
   max_links_per_pair = Inf,
   enable_bridge_pairs = TRUE,
   bridge_max_per_patch = 25,
+  distance_guard_for_primary = FALSE,
+  global_overlap_for_primary = FALSE,
+  parallel_dominance_ratio = 1.35,
+  parallel_overlap_penalty_floor = 0.20,
   shortcut_ratio_high = 3.0,
   shortcut_ratio_mid = 1.5,
   shortcut_ratio_low = 1.5,
@@ -420,6 +467,12 @@ select_circuit_utility <- function(
           root_c <- suppressWarnings(as.integer(uf$find(bp$c)))
           if (is.finite(root_a) && is.finite(root_c) && root_a == root_c) next
           if (isTRUE(selected_mask[[bp$idx1]]) || isTRUE(selected_mask[[bp$idx2]])) next
+          if (isTRUE(distance_guard_for_primary) && !is.null(redundancy_distance_ok) && length(selected_overlap_global) > 0) {
+            ok_dist_1 <- tryCatch(isTRUE(redundancy_distance_ok(cand_list[[bp$idx1]], selected_overlap_global)), error = function(e) TRUE)
+            if (!ok_dist_1) next
+            ok_dist_2 <- tryCatch(isTRUE(redundancy_distance_ok(cand_list[[bp$idx2]], selected_overlap_global)), error = function(e) TRUE)
+            if (!ok_dist_2) next
+          }
           ok1 <- commit_candidate(bp$idx1, corr_type = "primary", score = bp$score, overlap_r = 0)
           ok2 <- commit_candidate(bp$idx2, corr_type = "primary", score = bp$score, overlap_r = 0)
           if (ok1) primary_links <- primary_links + 1L
@@ -455,7 +508,17 @@ select_circuit_utility <- function(
     if (is.finite(max_links_per_pair) && selected_for_pair >= max_links_per_pair) next
 
     overlap_r <- 0
+    global_overlap_r <- 0
     if (length(roots) > 1) {
+      if (isTRUE(distance_guard_for_primary) && !is.null(redundancy_distance_ok) && length(selected_overlap_global) > 0) {
+        ok <- tryCatch(isTRUE(redundancy_distance_ok(cand, selected_overlap_global)), error = function(e) TRUE)
+        if (!ok) next
+      }
+      if (isTRUE(global_overlap_for_primary) && !is.null(global_overlap_ratio) && length(selected_overlap_global) > 0) {
+        global_overlap_r <- suppressWarnings(as.numeric(tryCatch(global_overlap_ratio(cand, selected_overlap_global), error = function(e) 0)))
+        if (!is.finite(global_overlap_r)) global_overlap_r <- 0
+        if (global_overlap_r > global_overlap_reject_ratio) next
+      }
       root_sizes <- vapply(roots, function(root) {
         val <- uf$size[[as.character(root)]]
         if (is.null(val) || !is.finite(val)) 0 else as.numeric(val)
@@ -467,6 +530,11 @@ select_circuit_utility <- function(
       if (!is.null(redundancy_distance_ok) && length(selected_overlap_global) > 0) {
         ok <- tryCatch(isTRUE(redundancy_distance_ok(cand, selected_overlap_global)), error = function(e) TRUE)
         if (!ok) next
+      }
+      if (!is.null(global_overlap_ratio) && length(selected_overlap_global) > 0) {
+        global_overlap_r <- suppressWarnings(as.numeric(tryCatch(global_overlap_ratio(cand, selected_overlap_global), error = function(e) 0)))
+        if (!is.finite(global_overlap_r)) global_overlap_r <- 0
+        if (global_overlap_r > global_overlap_reject_ratio) next
       }
       prior <- selected_overlap_by_pair[[pair_key_chr]] %||% list()
       overlap_r <- suppressWarnings(as.numeric(tryCatch(overlap_ratio(cand, prior), error = function(e) 0)))
@@ -489,6 +557,21 @@ select_circuit_utility <- function(
           shortcut_mult_mid = shortcut_mult_mid,
           shortcut_mult_low = shortcut_mult_low
         )
+        if (global_overlap_r > 0) {
+          penalty <- max(as.numeric(parallel_overlap_penalty_floor), 1.0 - global_overlap_r)
+          multiplier <- multiplier * penalty
+          if (!is.null(g) && igraph::vcount(g) > 0) {
+            dist_m <- tryCatch(
+              igraph::distances(g, v = as.character(pids[[1]]), to = as.character(pids[[length(pids)]]), weights = igraph::E(g)$weight),
+              error = function(e) matrix(NA_real_, nrow = 1, ncol = 1)
+            )
+            cur_len <- suppressWarnings(as.numeric(dist_m[[1]]))
+            ratio <- cur_len / max(len_val, 1e-9)
+            if (is.finite(ratio) && ratio <= as.numeric(parallel_dominance_ratio)) {
+              multiplier <- min(multiplier, as.numeric(shortcut_mult_low) * 0.5)
+            }
+          }
+        }
       }
     }
 
@@ -563,11 +646,19 @@ optimize_largest_network <- function(nodes, edges, budget, loop_fraction = 0.05,
 #' @return List with selected ids and stats.
 #' @export
 optimize_strategy <- function(strategy, nodes, edges, candidates, budget, ...) {
-  strategy <- match.arg(strategy, c("largest_network", "most_connectivity", "circuit_utility"))
-  if (strategy == "most_connectivity") strategy <- "circuit_utility"
-  if (strategy == "largest_network") {
+  strategy_key <- terralink_normalize_strategy_key(strategy, default = "most_connected_habitat")
+  if (strategy_key == "largest_single_network") {
     res <- optimize_largest_network(nodes, edges, budget)
     return(list(selected = res$selected, stats = list(budget_used = res$total_cost)))
+  }
+  if (strategy_key %in% c("reachable_habitat_advanced", "landscape_fluidity")) {
+    terralink_abort(
+      sprintf(
+        "Strategy '%s' requires patch geometry/coordinate context. Use terralink_raster(), terralink_vector(), run_raster_analysis(), or run_vector_analysis().",
+        strategy_key
+      ),
+      class = "terralink_error_input"
+    )
   }
   res <- select_circuit_utility(candidates, budget = budget, ...)
   list(selected = res$selected_ids, stats = res$stats, picks = res$picks)
